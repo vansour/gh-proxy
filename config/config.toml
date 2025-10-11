@@ -1,0 +1,26 @@
+[server]
+host = "0.0.0.0" 
+port = 8080 
+sizeLimit = 125 # MB
+
+[shell]
+editor = true
+
+[log]
+logFilePath = "/app/logs/gh-proxy.log" 
+maxLogSize = 5 # MB
+level = "info" # debug, info, warn, error, none
+
+[auth]
+token = ""
+
+[blacklist]
+enabled = false
+blacklistFile = "/app/config/blacklist.json"
+
+
+[docker]
+enabled = true
+auth = false
+[docker.auther]
+user1 = "testpass"

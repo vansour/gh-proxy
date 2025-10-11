@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub & Docker 代理服务</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/>
+                </svg>
+                <h1>gh-proxy</h1>
+            </div>
+            <div class="status-badge" id="statusBadge">
+                <span class="status-dot"></span>
+                <span>正在检查...</span>
+            </div>
+        </header>
+
+        <!-- Config Info Cards -->
+        <div class="config-cards" id="configCards">
+            <div class="config-card">
+                <div class="config-icon">📦</div>
+                <div class="config-content">
+                    <h3>文件大小限制</h3>
+                    <p class="config-value" id="sizeLimit">-</p>
+                    <span class="config-label">MB</span>
+                </div>
+            </div>
+            <div class="config-card">
+                <div class="config-icon">🐳</div>
+                <div class="config-content">
+                    <h3>Docker 代理</h3>
+                    <p class="config-value" id="dockerEnabled">-</p>
+                </div>
+            </div>
+            <div class="config-card">
+                <div class="config-icon">🛡️</div>
+                <div class="config-content">
+                    <h3>黑名单</h3>
+                    <p class="config-value" id="blacklistEnabled">-</p>
+                </div>
+            </div>
+            <div class="config-card">
+                <div class="config-icon">✏️</div>
+                <div class="config-content">
+                    <h3>在线编辑器</h3>
+                    <p class="config-value" id="editorEnabled">-</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Usage Section -->
+        <div class="usage-section">
+            <div class="tabs">
+                <button class="tab-button active" data-tab="github">
+                    <svg class="tab-icon" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                    </svg>
+                    GitHub 加速
+                </button>
+                <button class="tab-button" data-tab="docker">
+                    <svg class="tab-icon" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M13.983 11.078h2.119a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.119a.185.185 0 00-.185.185v1.888c0 .102.083.185.185.185m-2.954-5.43h2.118a.186.186 0 00.186-.186V3.574a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m0 2.716h2.118a.187.187 0 00.186-.186V6.29a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.887c0 .102.082.185.185.186m-2.93 0h2.12a.186.186 0 00.184-.186V6.29a.185.185 0 00-.185-.185H8.1a.185.185 0 00-.185.185v1.887c0 .102.083.185.185.186m-2.964 0h2.119a.186.186 0 00.185-.186V6.29a.185.185 0 00-.185-.185H5.136a.186.186 0 00-.186.185v1.887c0 .102.084.185.186.186m5.893 2.715h2.118a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m-2.93 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.083.185.185.185m-2.964 0h2.119a.185.185 0 00.185-.185V9.006a.185.185 0 00-.184-.186h-2.12a.186.186 0 00-.186.186v1.887c0 .102.084.185.186.185m-2.92 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.082.185.185.185M23.763 9.89c-.065-.051-.672-.51-1.954-.51-.338 0-.676.03-1.01.09-.248-1.827-1.66-2.782-1.688-2.815l-.344-.199-.226.327c-.284.438-.49.922-.612 1.43-.23.97-.09 1.882.403 2.661-.595.332-1.55.413-1.744.42H.751a.751.751 0 00-.75.748 11.376 11.376 0 00.692 4.062c.545 1.428 1.355 2.48 2.41 3.124 1.18.723 3.1 1.137 5.275 1.137.983.003 1.963-.086 2.93-.266a12.248 12.248 0 003.823-1.389c.98-.567 1.86-1.288 2.61-2.136 1.252-1.418 1.998-2.997 2.553-4.4h.221c1.372 0 2.215-.549 2.68-1.009.309-.293.55-.65.707-1.046l.098-.288z"/>
+                    </svg>
+                    Docker 加速
+                </button>
+            </div>
+
+            <!-- GitHub Tab Content -->
+            <div class="tab-content active" id="github-content">
+                <div class="usage-card">
+                    <h3>🚀 GitHub 文件加速</h3>
+                    <p class="description">直接替换 GitHub 域名即可加速下载文件、克隆仓库等操作</p>
+                    
+                    <div class="example-section">
+                        <h4>方式一：替换域名</h4>
+                        <div class="code-block">
+                            <code>https://github.com/user/repo/file</code>
+                            <span class="arrow">→</span>
+                            <code class="highlight">https://your-domain.com/github.com/user/repo/file</code>
+                        </div>
+                        <button class="copy-btn" onclick="copyExample('github-domain')">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            复制
+                        </button>
+                    </div>
+
+                    <div class="example-section">
+                        <h4>方式二：使用路径前缀</h4>
+                        <div class="code-block">
+                            <code>https://github.com/user/repo/file</code>
+                            <span class="arrow">→</span>
+                            <code class="highlight">https://your-domain.com/github/user/repo/file</code>
+                        </div>
+                        <button class="copy-btn" onclick="copyExample('github-path')">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            复制
+                        </button>
+                    </div>
+
+                    <div class="example-section">
+                        <h4>Git Clone 加速</h4>
+                        <div class="code-block">
+                            <code>git clone https://your-domain.com/github.com/user/repo.git</code>
+                        </div>
+                        <button class="copy-btn" onclick="copyExample('git-clone')">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            复制
+                        </button>
+                    </div>
+
+                    <div class="tips-box">
+                        <h4>💡 小提示</h4>
+                        <ul>
+                            <li>支持自动转换 blob 链接为 raw 下载链接</li>
+                            <li>支持 Release 文件下载加速</li>
+                            <li>支持 API 访问加速</li>
+                            <li>文件大小限制：<span id="sizeLimitTip">-</span> MB</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Docker Tab Content -->
+            <div class="tab-content" id="docker-content">
+                <div class="usage-card">
+                    <h3>🐳 Docker 镜像加速</h3>
+                    <p class="description">支持多个镜像仓库的加速代理服务</p>
+                    
+                    <div class="example-section">
+                        <h4>Docker Hub (默认)</h4>
+                        <div class="code-block">
+                            <code>docker pull your-domain.com/nginx:latest</code>
+                        </div>
+                        <button class="copy-btn" onclick="copyExample('docker-hub')">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            复制
+                        </button>
+                    </div>
+
+                    <div class="example-section">
+                        <h4>GitHub Container Registry</h4>
+                        <div class="code-block">
+                            <code>docker pull your-domain.com/ghcr.io/user/image:tag</code>
+                        </div>
+                        <button class="copy-btn" onclick="copyExample('ghcr')">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            复制
+                        </button>
+                    </div>
+
+                    <div class="example-section">
+                        <h4>Google Container Registry</h4>
+                        <div class="code-block">
+                            <code>docker pull your-domain.com/gcr.io/project/image:tag</code>
+                        </div>
+                        <button class="copy-btn" onclick="copyExample('gcr')">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            复制
+                        </button>
+                    </div>
+
+                    <div class="example-section">
+                        <h4>Kubernetes Registry</h4>
+                        <div class="code-block">
+                            <code>docker pull your-domain.com/registry.k8s.io/image:tag</code>
+                        </div>
+                        <button class="copy-btn" onclick="copyExample('k8s')">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            复制
+                        </button>
+                    </div>
+
+                    <div class="tips-box">
+                        <h4>💡 支持的镜像仓库</h4>
+                        <ul>
+                            <li>✅ Docker Hub (docker.io) - 默认</li>
+                            <li>✅ GitHub Container Registry (ghcr.io)</li>
+                            <li>✅ Google Container Registry (gcr.io)</li>
+                            <li>✅ Kubernetes Registry (registry.k8s.io)</li>
+                            <li>✅ NVIDIA Container Registry (nvcr.io)</li>
+                            <li>✅ Quay.io (quay.io)</li>
+                            <li>✅ Microsoft Container Registry (mcr.microsoft.com)</li>
+                            <li>✅ Elastic Container Registry (docker.elastic.co)</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>gh-proxy - 高性能 GitHub & Docker 代理服务</p>
+            <p class="footer-links">
+                <a href="https://github.com" target="_blank">GitHub</a>
+                <span>·</span>
+                <a href="/healthz" target="_blank">健康检查</a>
+                <span>·</span>
+                <a href="/api/config" target="_blank">API 文档</a>
+            </p>
+        </footer>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

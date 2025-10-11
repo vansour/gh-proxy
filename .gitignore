@@ -1,0 +1,59 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file for libraries (keep it for binaries)
+# Cargo.lock
+
+# Debug and profiling
+*.profraw
+*.gcda
+*.gcno
+flamegraph.svg
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Log files
+*.log
+/logs/
+/log/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Config overrides (keep template)
+/config/config.local.toml
+/config/blacklist.json
+
+# Docker volumes and data
+/data/
+/volumes/
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# Coverage reports
+coverage/
+*.profdata
+tarpaulin-report.html
+
+# Backup files
+*.backup
+*.bak
+*~
