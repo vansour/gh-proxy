@@ -7,8 +7,10 @@ sizeLimit = 2048 # MB
 editor = true
 
 [log]
-logFilePath = "/app/logs/gh-proxy.log" 
-maxLogSize = 5 # MB
+# Note: logFilePath and maxLogSize are no longer used
+# All logs are now output to stdout and captured by Docker logs
+logFilePath = "/app/logs/gh-proxy.log" # (deprecated, logs now go to Docker)
+maxLogSize = 5 # MB (deprecated)
 level = "info" # debug, info, warn, error, none
 
 [auth]

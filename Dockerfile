@@ -4,25 +4,29 @@ FROM rust:trixie AS builder
 WORKDIR /app
 
 # Copy all sources
-COPY Cargo.toml ./
-COPY src ./src
-COPY config ./config
+COPY Cargo.toml /app/
+COPY src /app/src
+COPY config /app/config
 
 # Build the project
 RUN cargo build --release
 
-# Final runtime stage - requirement: base on rust:trixie
-FROM rust:trixie
+# Final runtime stage - use lightweight debian image
+FROM debian:trixie-slim
 WORKDIR /app
 
-COPY --from=builder /app/target/release/gh-proxy /usr/local/bin/gh-proxy
-COPY config ./config
-COPY web ./web
+# Install CA certificates for HTTPS connections
+RUN apt-get update && \
+    apt-get install -y ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-# Create log directory
-RUN mkdir -p /app/logs
+# Copy the compiled binary
+COPY --from=builder /app/target/release/gh-proxy /app/gh-proxy
 
-ENV GH_PROXY_CONFIG=/app/config/config.toml
+# Copy static files
+COPY web /app/web
+COPY config /app/config
+
 EXPOSE 8080
 
-CMD ["gh-proxy"]
+CMD ["/app/gh-proxy"]

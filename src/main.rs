@@ -141,12 +141,6 @@ async fn main() -> anyhow::Result<()> {
     // Log configuration info
     info!("Starting gh-proxy server");
     info!("Log level: {}", settings.log.get_level());
-    info!("Log file: {}", settings.log.log_file_path);
-    info!(
-        "Max log size: {} MB ({} bytes)",
-        settings.log.max_log_size,
-        settings.log.max_log_size_bytes()
-    );
     info!("Docker proxy enabled: {}", settings.docker.enabled);
     info!(
         "Blacklist enabled: {} (lazy loading)",
@@ -750,89 +744,22 @@ fn extract_client_ip(req: &Request<Body>) -> Option<String> {
 }
 
 fn setup_tracing(log_config: &config::LogConfig) {
-    use tracing_appender::rolling::{RollingFileAppender, Rotation};
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(log_config.get_level()));
 
-    let log_path = std::path::Path::new(&log_config.log_file_path);
+    // Create stdout layer only (logs to console, captured by Docker logs)
+    let stdout_layer = fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false);
 
-    // Extract directory and filename
-    let (directory, filename) = if let Some(parent) = log_path.parent() {
-        let dir = parent.to_string_lossy().to_string();
-        let file = log_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("ghproxy.log")
-            .to_string();
-        (dir, file)
-    } else {
-        ("/app/log".to_string(), "ghproxy.log".to_string())
-    };
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stdout_layer)
+        .init();
 
-    // Try to create rolling file appender with daily rotation
-    match std::fs::create_dir_all(&directory) {
-        Ok(_) => {
-            // Create rolling file appender (rotates daily, keeps logs with date suffix)
-            let file_appender = RollingFileAppender::builder()
-                .rotation(Rotation::DAILY) // Rotate daily
-                .filename_prefix(&filename) // Base filename
-                .filename_suffix("log") // Suffix for rotated files
-                .max_log_files(30) // Keep last 30 days of logs
-                .build(&directory)
-                .expect("Failed to create rolling file appender");
-
-            // Create a non-blocking writer for better performance
-            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-            // Create stdout layer (logs to console with colors)
-            let stdout_layer = fmt::layer()
-                .with_writer(std::io::stdout)
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false);
-
-            // Create file layer (logs to rotating file without colors)
-            let file_layer = fmt::layer()
-                .with_writer(non_blocking)
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false)
-                .with_ansi(false);
-
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(stdout_layer)
-                .with(file_layer)
-                .init();
-
-            eprintln!(
-                "Logging initialized: console + rolling file ({}/{}.*)",
-                directory, filename
-            );
-            eprintln!("Log rotation: daily, keeping last 30 days");
-
-            // Keep the guard alive for the lifetime of the program
-            // Store it in a global static to prevent it from being dropped
-            std::mem::forget(_guard);
-        }
-        Err(e) => {
-            // Fallback to stdout only
-            let fmt_layer = fmt::layer()
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false);
-
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt_layer)
-                .init();
-
-            eprintln!(
-                "Warning: Failed to create log directory '{}': {}. Logging to console only.",
-                directory, e
-            );
-        }
-    }
+    eprintln!("Logging initialized: console only (Docker logs)");
 }
