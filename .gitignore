@@ -35,10 +35,6 @@ desktop.ini
 .env.local
 .env.*.local
 
-# Config overrides (keep template)
-/config/config.local.toml
-/config/blacklist.json
-
 # Docker volumes and data
 /data/
 /volumes/
