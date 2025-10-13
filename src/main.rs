@@ -16,7 +16,7 @@ use hyper_util::rt::TokioExecutor;
 use tokio::signal;
 use tokio::sync::OnceCell;
 use tower::service_fn;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, instrument, warn};
 
 mod api;
@@ -193,9 +193,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/app.js", get(serve_static_file))
         .route("/api/config", get(api::get_config))
         .route("/v2", any(docker::docker_v2_root))
-        .route("/v2/*path", any(docker::docker_v2_proxy))
-        .route("/github/*path", any(github::github_proxy))
-        .route("/docker/*path", any(docker::docker_proxy))
+        .route("/v2/{*path}", any(docker::docker_v2_proxy))
+        .route("/github/{*path}", any(github::github_proxy))
+        .route("/docker/{*path}", any(docker::docker_proxy))
         .with_state(app_state)
         .fallback_service(fallback_service)
         .layer(cors);

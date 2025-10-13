@@ -53,8 +53,6 @@ rustfmt.toml
 # Environment and local config overrides
 .env
 .env.*
-config/*.local.toml
-config/blacklist.json
 
 # CI/CD files
 .travis.yml
