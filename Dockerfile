@@ -3,16 +3,12 @@ FROM rust:trixie AS builder
 
 WORKDIR /app
 
-# Pre-copy manifest to leverage build cache
+# Copy all sources
 COPY Cargo.toml ./
-
-# Create dummy src to satisfy cargo while caching dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
-
-# Copy actual sources
 COPY src ./src
 COPY config ./config
 
+# Build the project
 RUN cargo build --release
 
 # Final runtime stage - requirement: base on rust:trixie
