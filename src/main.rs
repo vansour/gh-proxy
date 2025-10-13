@@ -191,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(health))
         .route("/style.css", get(serve_static_file))
         .route("/app.js", get(serve_static_file))
+        .route("/gh-proxy.png", get(serve_static_file))
         .route("/api/config", get(api::get_config))
         .route("/v2", any(docker::docker_v2_root))
         .route("/v2/{*path}", any(docker::docker_v2_proxy))
@@ -296,33 +297,28 @@ async fn index() -> impl axum::response::IntoResponse {
     )
 }
 
-async fn serve_static_file(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
+async fn serve_static_file(uri: axum::http::Uri) -> Response<Body> {
     let path = uri.path().trim_start_matches('/');
     let file_path = format!("/app/web/{}", path);
 
-    let (content_type, charset) = match path {
-        "style.css" => ("text/css", "; charset=utf-8"),
-        "app.js" => ("application/javascript", "; charset=utf-8"),
-        _ => ("text/plain", "; charset=utf-8"),
+    let content_type = match path {
+        "style.css" => "text/css; charset=utf-8",
+        "app.js" => "application/javascript; charset=utf-8",
+        "gh-proxy.png" => "image/png",
+        _ => "text/plain; charset=utf-8",
     };
 
-    match std::fs::read_to_string(&file_path) {
-        Ok(content) => (
-            StatusCode::OK,
-            [(
-                hyper::header::CONTENT_TYPE,
-                format!("{}{}", content_type, charset),
-            )],
-            content,
-        ),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            [(
-                hyper::header::CONTENT_TYPE,
-                "text/plain; charset=utf-8".to_string(),
-            )],
-            "File not found".to_string(),
-        ),
+    match std::fs::read(&file_path) {
+        Ok(content) => Response::builder()
+            .status(StatusCode::OK)
+            .header(hyper::header::CONTENT_TYPE, content_type)
+            .body(Body::from(content))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(Body::from("File not found"))
+            .unwrap(),
     }
 }
 
