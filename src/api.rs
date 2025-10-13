@@ -1,8 +1,4 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-};
+use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -38,11 +34,9 @@ pub struct DockerInfo {
 }
 
 /// GET /api/config - 获取配置信息
-pub async fn get_config(
-    State(state): State<AppState>,
-) -> Result<Json<ConfigResponse>, StatusCode> {
+pub async fn get_config(State(state): State<AppState>) -> Result<Json<ConfigResponse>, StatusCode> {
     info!("API: Fetching configuration");
-    
+
     let config = ConfigResponse {
         server: ServerInfo {
             size_limit: state.settings.server.size_limit,
@@ -57,6 +51,6 @@ pub async fn get_config(
             enabled: state.settings.docker.enabled,
         },
     };
-    
+
     Ok(Json(config))
 }

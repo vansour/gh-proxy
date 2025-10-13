@@ -2,16 +2,16 @@ use std::str::FromStr;
 
 use axum::{
     body::Body,
-    extract::{Path, State},
-    http::{HeaderMap, Request, Response, StatusCode, Uri},
+    extract::{Path, Request, State},
+    http::{HeaderMap, Response, StatusCode, Uri},
 };
 use http_body_util::BodyExt;
 use hyper::header;
 use hyper::http::uri::{Authority, PathAndQuery};
 use tracing::{error, info, instrument, warn};
 
-use crate::{AppState, ProxyError, ProxyKind, ProxyResult};
 use crate::config::DockerConfig;
+use crate::{AppState, ProxyError, ProxyKind, ProxyResult};
 
 /// Docker v2 root handler for /v2 endpoint
 #[instrument(skip_all)]
@@ -20,12 +20,12 @@ pub async fn docker_v2_root(
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
     info!("Docker v2 root request: {}", req.method());
-    
+
     if !state.settings.docker.enabled {
         warn!("Docker proxy is disabled in configuration");
         return Err(StatusCode::FORBIDDEN);
     }
-    
+
     // Check authentication if required
     if state.settings.docker.auth {
         if !verify_docker_auth(req.headers(), &state.settings.docker) {
@@ -33,11 +33,11 @@ pub async fn docker_v2_root(
             return Err(StatusCode::UNAUTHORIZED);
         }
     }
-    
+
     // Forward to registry-1.docker.io/v2/
     let target_uri = Uri::from_static("https://registry-1.docker.io/v2/");
     info!("Proxying v2 root to: {}", target_uri);
-    
+
     match crate::proxy_request(&state, req, target_uri, ProxyKind::Docker).await {
         Ok(response) => {
             info!("Docker v2 root success: status={}", response.status());
@@ -58,12 +58,12 @@ pub async fn docker_v2_proxy(
     mut req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
     info!("Docker v2 proxy request: {} /v2/{}", req.method(), path);
-    
+
     if !state.settings.docker.enabled {
         warn!("Docker proxy is disabled in configuration");
         return Err(StatusCode::FORBIDDEN);
     }
-    
+
     // Check authentication if required (for proxy auth, not Docker Hub auth)
     if state.settings.docker.auth {
         if !verify_docker_auth(req.headers(), &state.settings.docker) {
@@ -71,7 +71,7 @@ pub async fn docker_v2_proxy(
             return Err(StatusCode::UNAUTHORIZED);
         }
     }
-    
+
     // Detect if the path starts with a registry domain (e.g., ghcr.io, gcr.io, etc.)
     let known_registries = [
         ("ghcr.io", "ghcr.io"),
@@ -83,30 +83,37 @@ pub async fn docker_v2_proxy(
         ("mcr.microsoft.com", "mcr.microsoft.com"),
         ("docker.elastic.co", "docker.elastic.co"),
     ];
-    
-    let (target_registry, normalized_path) = if let Some((prefix, registry)) = known_registries.iter()
-        .find(|(prefix, _)| path.starts_with(&format!("{}/", prefix))) 
+
+    let (target_registry, normalized_path) = if let Some((prefix, registry)) = known_registries
+        .iter()
+        .find(|(prefix, _)| path.starts_with(&format!("{}/", prefix)))
     {
         // Extract the path after the registry prefix
         let remaining_path = path.strip_prefix(&format!("{}/", prefix)).unwrap();
-        info!("Detected registry: {} for path: {}", registry, remaining_path);
+        info!(
+            "Detected registry: {} for path: {}",
+            registry, remaining_path
+        );
         (registry.to_string(), remaining_path.to_string())
     } else {
         // Default to Docker Hub, normalize the path
         let normalized = normalize_docker_path(&path);
         ("registry-1.docker.io".to_string(), normalized)
     };
-    
-    info!("Target registry: {}, normalized path: /v2/{}", target_registry, normalized_path);
-    
+
+    info!(
+        "Target registry: {}, normalized path: /v2/{}",
+        target_registry, normalized_path
+    );
+
     // Get anonymous token for registries that require authentication
     if let Some(token) = get_registry_token(&state, &target_registry, &normalized_path).await {
         req.headers_mut().insert(
             header::AUTHORIZATION,
-            format!("Bearer {}", token).parse().unwrap()
+            format!("Bearer {}", token).parse().unwrap(),
         );
     }
-    
+
     // Build the target URI with the detected registry
     let target_path = format!("/v2/{}", normalized_path);
     let target_uri = Uri::builder()
@@ -115,10 +122,10 @@ pub async fn docker_v2_proxy(
         .path_and_query(target_path.as_str())
         .build()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+
     let target_uri_str = target_uri.to_string();
     info!("Proxying to registry: {}", target_uri_str);
-    
+
     match crate::proxy_request(&state, req, target_uri, ProxyKind::Docker).await {
         Ok(response) => {
             info!("Docker v2 proxy success: status={}", response.status());
@@ -153,9 +160,7 @@ pub async fn docker_proxy(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    if state.settings.docker.auth
-        && !verify_docker_auth(req.headers(), &state.settings.docker)
-    {
+    if state.settings.docker.auth && !verify_docker_auth(req.headers(), &state.settings.docker) {
         warn!("Docker authentication failed");
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -199,11 +204,7 @@ fn normalize_docker_path(path: &str) -> String {
 }
 
 /// Get anonymous token for registry authentication
-async fn get_registry_token(
-    state: &AppState,
-    registry: &str,
-    path: &str,
-) -> Option<String> {
+async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Option<String> {
     // Parse the image name from path to get the scope
     let repo = if path.contains("manifests") || path.contains("blobs") {
         // Extract repository name from path like "library/nginx/manifests/latest" or "sky22333/hubproxy/manifests/latest"
@@ -216,22 +217,21 @@ async fn get_registry_token(
     } else {
         None
     };
-    
+
     let repo = repo?;
-    
+
     let (auth_url, service_name) = match registry {
-        "registry-1.docker.io" => {
-            (
-                format!("https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull", repo),
-                "Docker Hub"
-            )
-        }
-        "ghcr.io" => {
-            (
-                format!("https://ghcr.io/token?scope=repository:{}:pull", repo),
-                "GitHub Container Registry"
-            )
-        }
+        "registry-1.docker.io" => (
+            format!(
+                "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
+                repo
+            ),
+            "Docker Hub",
+        ),
+        "ghcr.io" => (
+            format!("https://ghcr.io/token?scope=repository:{}:pull", repo),
+            "GitHub Container Registry",
+        ),
         "gcr.io" => {
             // GCR (Google Container Registry) - 公共镜像通常不需要认证
             // 私有镜像需要 gcloud 认证,这里跳过
@@ -245,18 +245,22 @@ async fn get_registry_token(
             // 旧的 Kubernetes Registry - 公共镜像,尝试无认证访问
             return None;
         }
-        "quay.io" => {
-            (
-                format!("https://quay.io/v2/auth?service=quay.io&scope=repository:{}:pull", repo),
-                "Quay.io"
-            )
-        }
+        "quay.io" => (
+            format!(
+                "https://quay.io/v2/auth?service=quay.io&scope=repository:{}:pull",
+                repo
+            ),
+            "Quay.io",
+        ),
         "nvcr.io" => {
             // NVIDIA Container Registry
             // 公共镜像可以通过特殊令牌访问
             (
-                format!("https://authn.nvidia.com/token?service=nvcr.io&scope=repository:{}:pull", repo),
-                "NVIDIA Container Registry"
+                format!(
+                    "https://authn.nvidia.com/token?service=nvcr.io&scope=repository:{}:pull",
+                    repo
+                ),
+                "NVIDIA Container Registry",
             )
         }
         "mcr.microsoft.com" => {
@@ -269,21 +273,24 @@ async fn get_registry_token(
         }
         _ => return None,
     };
-    
-    info!("Requesting {} anonymous token for repository: {}", service_name, repo);
-    
+
+    info!(
+        "Requesting {} anonymous token for repository: {}",
+        service_name, repo
+    );
+
     let token_uri = auth_url.parse::<Uri>().ok()?;
     let token_req = Request::builder()
         .method("GET")
         .uri(token_uri)
         .body(Body::empty())
         .ok()?;
-    
+
     match state.client.request(token_req).await {
         Ok(token_resp) => {
             if token_resp.status().is_success() {
                 let body_bytes = token_resp.into_body().collect().await.ok()?.to_bytes();
-                
+
                 if let Ok(token_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                     if let Some(token) = token_json.get("token").and_then(|t| t.as_str()) {
                         info!("Successfully obtained {} anonymous token", service_name);
@@ -291,14 +298,18 @@ async fn get_registry_token(
                     }
                 }
             } else {
-                warn!("{} token request failed with status: {}", service_name, token_resp.status());
+                warn!(
+                    "{} token request failed with status: {}",
+                    service_name,
+                    token_resp.status()
+                );
             }
         }
         Err(e) => {
             warn!("Failed to get {} token: {}", service_name, e);
         }
     }
-    
+
     None
 }
 
@@ -315,9 +326,7 @@ pub fn resolve_docker_target(state: &AppState, path: &str) -> ProxyResult<Uri> {
     // Parse registry/image/tag
     let parts: Vec<&str> = path.splitn(2, '/').collect();
     if parts.is_empty() {
-        return Err(ProxyError::InvalidTarget(
-            "Invalid Docker path".to_string(),
-        ));
+        return Err(ProxyError::InvalidTarget("Invalid Docker path".to_string()));
     }
 
     let registry_host = parts[0];
@@ -383,9 +392,21 @@ mod tests {
 
     #[test]
     fn test_normalize_docker_path() {
-        assert_eq!(normalize_docker_path("nginx/manifests/latest"), "library/nginx/manifests/latest");
-        assert_eq!(normalize_docker_path("library/nginx/manifests/latest"), "library/nginx/manifests/latest");
-        assert_eq!(normalize_docker_path("myuser/myimage/manifests/latest"), "myuser/myimage/manifests/latest");
-        assert_eq!(normalize_docker_path("ghcr.io/user/image/manifests/latest"), "ghcr.io/user/image/manifests/latest");
+        assert_eq!(
+            normalize_docker_path("nginx/manifests/latest"),
+            "library/nginx/manifests/latest"
+        );
+        assert_eq!(
+            normalize_docker_path("library/nginx/manifests/latest"),
+            "library/nginx/manifests/latest"
+        );
+        assert_eq!(
+            normalize_docker_path("myuser/myimage/manifests/latest"),
+            "myuser/myimage/manifests/latest"
+        );
+        assert_eq!(
+            normalize_docker_path("ghcr.io/user/image/manifests/latest"),
+            "ghcr.io/user/image/manifests/latest"
+        );
     }
 }

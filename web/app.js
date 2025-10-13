@@ -1,3 +1,76 @@
+// ==================== 工具函数模块 ====================
+const Utils = {
+    // 复制到剪贴板
+    async copyToClipboard(text) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                // 降级方案
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+            }
+            return true;
+        } catch (error) {
+            console.error('Copy failed:', error);
+            return false;
+        }
+    },
+
+    // 显示提示消息
+    showToast(message, type = 'success') {
+        const toast = document.getElementById('toast');
+        if (!toast) return;
+        
+        // 支持 HTML 内容（用于多行消息）
+        if (message.includes('<br>')) {
+            toast.innerHTML = message;
+        } else {
+            toast.textContent = message;
+        }
+        
+        toast.className = `toast ${type}`;
+        
+        // 显示 toast
+        setTimeout(() => {
+            toast.classList.add('show');
+        }, 10);
+        
+        // 根据内容长度调整显示时间
+        const displayTime = message.length > 50 ? 5000 : 3000;
+        
+        // 隐藏 toast
+        setTimeout(() => {
+            toast.classList.remove('show');
+        }, displayTime);
+    },
+
+    // 统一的错误处理
+    handleError(error, context = '') {
+        console.error(`Error in ${context}:`, error);
+        const message = error.message || '操作失败，请稍后重试';
+        this.showToast(context ? `${context}: ${message}` : message, 'error');
+    },
+
+    // 批量更新 DOM（减少重绘）
+    batchUpdateDOM(updates) {
+        // 使用 requestAnimationFrame 批量更新
+        requestAnimationFrame(() => {
+            updates.forEach(({ element, property, value }) => {
+                if (element) {
+                    element[property] = value;
+                }
+            });
+        });
+    }
+};
+
 // API 配置
 const API_BASE_URL = window.location.origin;
 const API_ENDPOINTS = {
@@ -11,43 +84,89 @@ let currentDomain = window.location.host;
 let currentProtocol = window.location.protocol; // 'http:' or 'https:'
 let isHttps = currentProtocol === 'https:';
 
+// 加载状态管理
+const LoadingManager = {
+    overlay: null,
+    
+    init() {
+        this.overlay = document.getElementById('loadingOverlay');
+    },
+    
+    show(text = '正在加载...') {
+        if (!this.overlay) return;
+        const loadingText = this.overlay.querySelector('.loading-text');
+        if (loadingText) {
+            loadingText.textContent = text;
+        }
+        this.overlay.classList.remove('hidden');
+    },
+    
+    hide() {
+        if (!this.overlay) return;
+        this.overlay.classList.add('hidden');
+    }
+};
+
 // 初始化应用
 document.addEventListener('DOMContentLoaded', async () => {
-    await checkServerStatus();
-    await loadConfig();
-    initializeTabs();
-    updateDomainInExamples();
-    checkDockerHttpWarning();
+    // 初始化加载管理器
+    LoadingManager.init();
+    LoadingManager.show('正在初始化服务...');
+    
+    try {
+        // 并行执行状态检查和配置加载
+        await Promise.all([
+            checkServerStatus(),
+            loadConfig()
+        ]);
+        
+        // 初始化其他组件
+        initializeTabs();
+        updateDomainInExamples();
+        checkDockerHttpWarning();
+    } catch (error) {
+        console.error('初始化失败:', error);
+        Utils.showToast('应用初始化失败，部分功能可能不可用', 'error');
+    } finally {
+        // 延迟隐藏加载动画，让用户看到加载完成
+        setTimeout(() => {
+            LoadingManager.hide();
+        }, 300);
+    }
 });
 
 // 检查服务器状态
 async function checkServerStatus() {
     const statusBadge = document.getElementById('statusBadge');
+    if (!statusBadge) return;
     
     try {
-        const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.health}`);
+        const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.health}`, {
+            signal: AbortSignal.timeout(5000) // 5秒超时
+        });
         
         if (response.ok) {
             statusBadge.classList.add('online');
             statusBadge.querySelector('span:last-child').textContent = '服务正常';
         } else {
-            throw new Error('Server returned error status');
+            throw new Error('服务器返回错误状态');
         }
     } catch (error) {
-        console.error('Health check failed:', error);
         statusBadge.classList.add('offline');
         statusBadge.querySelector('span:last-child').textContent = '服务异常';
-        showToast('无法连接到服务器', 'error');
+        console.error('健康检查失败:', error);
     }
 }
 
 // 加载配置
 async function loadConfig() {
     try {
-        const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.config}`);
+        const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.config}`, {
+            signal: AbortSignal.timeout(5000) // 5秒超时
+        });
         
         if (!response.ok) {
-            throw new Error('Failed to load config');
+            throw new Error('配置加载失败');
         }
         
         appConfig = await response.json();
@@ -55,9 +174,7 @@ async function loadConfig() {
         
         updateConfigUI();
     } catch (error) {
-        console.error('Error loading config:', error);
-        showToast('加载配置失败', 'error');
-        
+        console.error('加载配置失败:', error);
         // 设置默认值
         setDefaultConfig();
     }
@@ -120,49 +237,68 @@ function setDefaultConfig() {
     });
 }
 
-// 初始化标签页
+// 初始化标签页（使用事件委托优化）
 function initializeTabs() {
-    const tabButtons = document.querySelectorAll('.tab-button');
+    const tabsContainer = document.querySelector('.tabs');
+    if (!tabsContainer) return;
     
-    tabButtons.forEach(button => {
-        button.addEventListener('click', () => {
-            const tabName = button.getAttribute('data-tab');
-            
-            // 如果 Docker 未启用且点击的是 Docker 标签，阻止切换
-            if (tabName === 'docker' && appConfig && !appConfig.docker?.enabled) {
-                showToast('Docker 代理功能未启用', 'error');
-                return;
-            }
-            
-            // 移除所有活动状态
-            tabButtons.forEach(btn => btn.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(content => {
-                content.classList.remove('active');
-            });
-            
-            // 添加当前活动状态
-            button.classList.add('active');
-            document.getElementById(`${tabName}-content`).classList.add('active');
+    // 使用事件委托，只在父元素上绑定一个监听器
+    tabsContainer.addEventListener('click', (e) => {
+        const button = e.target.closest('.tab-button');
+        if (!button) return;
+        
+        const tabName = button.getAttribute('data-tab');
+        
+        // 如果 Docker 未启用且点击的是 Docker 标签，阻止切换
+        if (tabName === 'docker' && appConfig && !appConfig.docker?.enabled) {
+            Utils.showToast('Docker 代理功能未启用', 'error');
+            return;
+        }
+        
+        // 移除所有活动状态
+        tabsContainer.querySelectorAll('.tab-button').forEach(btn => {
+            btn.classList.remove('active');
         });
-    });
-}
-
-// 更新示例中的域名
-function updateDomainInExamples() {
-    const codeBlocks = document.querySelectorAll('.code-block code');
-    
-    codeBlocks.forEach(code => {
-        const text = code.textContent;
-        if (text.includes('your-domain.com')) {
-            code.textContent = text.replace(/your-domain\.com/g, currentDomain);
+        document.querySelectorAll('.tab-content').forEach(content => {
+            content.classList.remove('active');
+        });
+        
+        // 添加当前活动状态
+        button.classList.add('active');
+        const targetContent = document.getElementById(`${tabName}-content`);
+        if (targetContent) {
+            targetContent.classList.add('active');
         }
     });
 }
 
-// 复制示例命令
-function copyExample(type) {
-    let textToCopy = '';
+// 更新示例中的域名（优化 DOM 操作）
+function updateDomainInExamples() {
+    const codeBlocks = document.querySelectorAll('.code-block-code');
     
+    // 批量收集需要更新的元素和内容
+    const updates = [];
+    
+    codeBlocks.forEach(code => {
+        const text = code.textContent;
+        if (text.includes('your-domain.com')) {
+            const newText = text.replace(/your-domain\.com/g, currentDomain);
+            updates.push({
+                element: code,
+                property: 'textContent',
+                value: newText
+            });
+        }
+    });
+    
+    // 批量更新 DOM（减少重绘）
+    if (updates.length > 0) {
+        Utils.batchUpdateDOM(updates);
+    }
+}
+
+// 复制示例命令
+async function copyExample(type) {
     const examples = {
         'github-domain': `https://${currentDomain}/github.com/user/repo/file`,
         'github-path': `https://${currentDomain}/github/user/repo/file`,
@@ -173,61 +309,16 @@ function copyExample(type) {
         'k8s': `docker pull ${currentDomain}/registry.k8s.io/image:tag`
     };
     
-    textToCopy = examples[type] || '';
+    const textToCopy = examples[type] || '';
     
     if (textToCopy) {
-        copyToClipboard(textToCopy);
-        showToast('已复制到剪贴板 ✓', 'success');
-    }
-}
-
-// 复制到剪贴板
-async function copyToClipboard(text) {
-    try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(text);
+        const success = await Utils.copyToClipboard(textToCopy);
+        if (success) {
+            Utils.showToast('已复制到剪贴板 ✓', 'success');
         } else {
-            // 降级方案
-            const textarea = document.createElement('textarea');
-            textarea.value = text;
-            textarea.style.position = 'fixed';
-            textarea.style.opacity = '0';
-            document.body.appendChild(textarea);
-            textarea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textarea);
+            Utils.showToast('复制失败', 'error');
         }
-    } catch (error) {
-        console.error('Copy failed:', error);
-        showToast('复制失败', 'error');
     }
-}
-
-// 显示提示消息
-function showToast(message, type = 'success') {
-    const toast = document.getElementById('toast');
-    
-    // 支持 HTML 内容（用于多行消息）
-    if (message.includes('<br>')) {
-        toast.innerHTML = message;
-    } else {
-        toast.textContent = message;
-    }
-    
-    toast.className = `toast ${type}`;
-    
-    // 显示 toast
-    setTimeout(() => {
-        toast.classList.add('show');
-    }, 10);
-    
-    // 根据内容长度调整显示时间
-    const displayTime = message.length > 50 ? 5000 : 3000;
-    
-    // 隐藏 toast
-    setTimeout(() => {
-        toast.classList.remove('show');
-    }, displayTime);
 }
 
 // 自动刷新状态（每30秒）
@@ -327,14 +418,14 @@ function generateGithubUrl() {
     const url = input.value.trim();
     
     if (!url) {
-        showToast('请输入 GitHub 链接', 'error');
+        Utils.showToast('请输入 GitHub 链接', 'error');
         return;
     }
     
     // 验证是否是 GitHub 文件链接
     const validation = isValidGithubFileUrl(url);
     if (!validation.valid) {
-        showToast(validation.message, 'error');
+        Utils.showToast(validation.message, 'error');
         return;
     }
     
@@ -376,11 +467,10 @@ function generateGithubUrl() {
         // 显示结果
         resultText.textContent = acceleratedUrl;
         resultBox.style.display = 'block';
-        showToast('加速链接生成成功 ✓', 'success');
+        Utils.showToast('加速链接生成成功 ✓', 'success');
         
     } catch (error) {
-        console.error('URL parsing error:', error);
-        showToast('链接格式错误', 'error');
+        Utils.handleError(error, 'URL 解析');
     }
 }
 
@@ -393,19 +483,19 @@ function generateDockerUrl() {
     const imageName = input.value.trim();
     
     if (!imageName) {
-        showToast('请输入 Docker 镜像名称', 'error');
+        Utils.showToast('请输入 Docker 镜像名称', 'error');
         return;
     }
     
     // 检查是否使用 HTTP 访问
     if (!isHttps) {
-        showToast('⚠️ Docker 代理需要 HTTPS 协议<br>当前使用 HTTP 访问，Docker 客户端不支持非 HTTPS 的镜像仓库<br>请使用 HTTPS 访问本站点', 'error');
+        Utils.showToast('⚠️ Docker 代理需要 HTTPS 协议<br>当前使用 HTTP 访问，Docker 客户端不支持非 HTTPS 的镜像仓库<br>请使用 HTTPS 访问本站点', 'error');
         return;
     }
     
     // 检查 Docker 是否启用
     if (appConfig && !appConfig.docker?.enabled) {
-        showToast('Docker 代理功能未启用', 'error');
+        Utils.showToast('Docker 代理功能未启用', 'error');
         return;
     }
     
@@ -431,23 +521,26 @@ function generateDockerUrl() {
         // 显示结果
         resultText.textContent = acceleratedCommand;
         resultBox.style.display = 'block';
-        showToast('加速命令生成成功 ✓', 'success');
+        Utils.showToast('加速命令生成成功 ✓', 'success');
         
     } catch (error) {
-        console.error('Docker command generation error:', error);
-        showToast('镜像名称格式错误', 'error');
+        Utils.handleError(error, 'Docker 命令生成');
     }
 }
 
 // 复制生成的结果
-function copyResult(type) {
+async function copyResult(type) {
     const resultText = type === 'github' 
         ? document.getElementById('githubResultText').textContent
         : document.getElementById('dockerResultText').textContent;
     
     if (resultText) {
-        copyToClipboard(resultText);
-        showToast('已复制到剪贴板 ✓', 'success');
+        const success = await Utils.copyToClipboard(resultText);
+        if (success) {
+            Utils.showToast('已复制到剪贴板 ✓', 'success');
+        } else {
+            Utils.showToast('复制失败', 'error');
+        }
     }
 }
 

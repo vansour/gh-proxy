@@ -2,8 +2,8 @@ use std::str::FromStr;
 
 use axum::{
     body::Body,
-    extract::{Path, State},
-    http::{Request, Response, StatusCode, Uri},
+    extract::{Path, Request, State},
+    http::{Response, StatusCode, Uri},
 };
 use hyper::header;
 use hyper::http::uri::{Authority, PathAndQuery};
@@ -58,7 +58,7 @@ pub async fn github_proxy(
 /// Resolve GitHub target URI from path
 pub fn resolve_github_target(_state: &AppState, path: &str) -> ProxyResult<Uri> {
     let path = path.trim_start_matches('/');
-    
+
     if path.is_empty() {
         return Err(ProxyError::InvalidTarget(
             "Path cannot be empty".to_string(),
@@ -122,7 +122,7 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
 
     let after_github = url.split("github.com/").nth(1).unwrap_or("");
     let parts: Vec<&str> = after_github.trim_end_matches('/').split('/').collect();
-    
+
     // Should have exactly 2 parts (owner/repo) and no more
     parts.len() == 2
 }
@@ -135,15 +135,22 @@ mod tests {
     fn test_convert_blob_to_raw() {
         let blob_url = "https://github.com/owner/repo/blob/main/README.md";
         let raw_url = convert_github_blob_to_raw(blob_url);
-        assert_eq!(raw_url, "https://raw.githubusercontent.com/owner/repo/main/README.md");
+        assert_eq!(
+            raw_url,
+            "https://raw.githubusercontent.com/owner/repo/main/README.md"
+        );
     }
 
     #[test]
     fn test_is_repo_homepage() {
         assert!(is_github_repo_homepage("https://github.com/owner/repo"));
         assert!(is_github_repo_homepage("https://github.com/owner/repo/"));
-        assert!(!is_github_repo_homepage("https://github.com/owner/repo/blob/main/file.txt"));
-        assert!(!is_github_repo_homepage("https://github.com/owner/repo/tree/main"));
+        assert!(!is_github_repo_homepage(
+            "https://github.com/owner/repo/blob/main/file.txt"
+        ));
+        assert!(!is_github_repo_homepage(
+            "https://github.com/owner/repo/tree/main"
+        ));
         assert!(!is_github_repo_homepage("https://example.com"));
     }
 }

@@ -3,7 +3,8 @@
 **/*.rs.bk
 *.pdb
 
-# Cargo lock file for libraries (keep it for binaries)
+# Cargo.lock - Keep for binary/application projects (recommended for reproducible builds)
+# For library projects, uncomment the line below:
 # Cargo.lock
 
 # Debug and profiling
@@ -11,13 +12,36 @@
 *.gcda
 *.gcno
 flamegraph.svg
+perf.data
+perf.data.old
 
 # IDE files
-.vscode/
+## JetBrains IDEs (IntelliJ, RustRover, CLion, etc.)
 .idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+
+## Visual Studio Code
+.vscode/
+*.code-workspace
+
+## Vim/Neovim
 *.swp
 *.swo
 *~
+
+## Emacs
+*~
+\#*\#
+.\#*
+
+## Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+## General backup files
 *.bak
 
 # OS files

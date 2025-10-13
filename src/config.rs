@@ -62,6 +62,15 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(rename = "sizeLimit")]
     pub size_limit: u64, // MB
+    /// Maximum idle connections per host (default: 10)
+    #[serde(rename = "maxIdleConnections")]
+    pub max_idle_connections: usize,
+    /// Pool idle timeout in seconds (default: 90)
+    #[serde(rename = "poolIdleTimeout")]
+    pub pool_idle_timeout: u64,
+    /// Request timeout in seconds (default: 300)
+    #[serde(rename = "requestTimeout")]
+    pub request_timeout_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -70,6 +79,9 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             size_limit: 125,
+            max_idle_connections: 10,
+            pool_idle_timeout: 90,
+            request_timeout_secs: 300,
         }
     }
 }
@@ -79,6 +91,22 @@ impl ServerConfig {
         if self.host.is_empty() {
             self.host = "0.0.0.0".to_string();
         }
+
+        // Validate and adjust connection pool settings
+        if self.max_idle_connections == 0 {
+            self.max_idle_connections = 10;
+        }
+        if self.max_idle_connections > 1024 {
+            self.max_idle_connections = 1024; // Reasonable upper limit
+        }
+
+        if self.pool_idle_timeout == 0 {
+            self.pool_idle_timeout = 90;
+        }
+
+        if self.request_timeout_secs == 0 {
+            self.request_timeout_secs = 300;
+        }
     }
 
     pub fn bind_addr(&self) -> String {
@@ -86,7 +114,11 @@ impl ServerConfig {
     }
 
     pub fn request_timeout(&self) -> Duration {
-        Duration::from_secs(300) // 5 minutes for large downloads
+        Duration::from_secs(self.request_timeout_secs)
+    }
+
+    pub fn pool_idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.pool_idle_timeout)
     }
 }
 
@@ -132,7 +164,7 @@ impl LogConfig {
     pub fn max_log_size_bytes(&self) -> u64 {
         self.max_log_size * 1024 * 1024 // Convert MB to bytes
     }
-    
+
     pub fn get_level(&self) -> &str {
         &self.level
     }
@@ -187,7 +219,7 @@ impl BlacklistConfig {
         if !self.enabled {
             return Ok(Vec::new());
         }
-        
+
         match fs::read_to_string(&self.blacklist_file) {
             Ok(content) => {
                 // Try to parse as the new format with version and rules
@@ -195,139 +227,138 @@ impl BlacklistConfig {
                     Ok(blacklist.rules)
                 } else {
                     // Fallback to old format (direct array)
-                    let list: Vec<String> = serde_json::from_str(&content)
-                        .unwrap_or_else(|_| Vec::new());
+                    let list: Vec<String> =
+                        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
                     Ok(list)
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Vec::new())
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e),
         }
     }
-    
+
     pub fn is_ip_blacklisted(&self, ip: &str) -> bool {
         if !self.enabled {
             return false;
         }
-        
+
         let rules = match self.load_blacklist() {
             Ok(rules) => rules,
             Err(_) => return false,
         };
-        
+
         for rule in rules.iter() {
             if Self::ip_matches_rule(ip, rule) {
                 return true;
             }
         }
-        
+
         false
     }
-    
-    fn ip_matches_rule(ip: &str, rule: &str) -> bool {
+
+    /// Check if an IP matches a blacklist rule (public for lazy loading)
+    pub fn ip_matches_rule(ip: &str, rule: &str) -> bool {
         // Exact match
         if ip == rule {
             return true;
         }
-        
+
         // CIDR notation (e.g., 192.168.1.0/24)
         if rule.contains('/') {
             return Self::ip_in_cidr(ip, rule);
         }
-        
+
         // IP range (e.g., 192.168.1.1-192.168.1.255)
         if rule.contains('-') {
             return Self::ip_in_range(ip, rule);
         }
-        
+
         // Wildcard (e.g., 192.168.1.*)
         if rule.contains('*') {
             return Self::ip_matches_wildcard(ip, rule);
         }
-        
+
         false
     }
-    
+
     fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
         let parts: Vec<&str> = cidr.split('/').collect();
         if parts.len() != 2 {
             return false;
         }
-        
+
         let network = parts[0];
         let prefix_len: u32 = match parts[1].parse() {
             Ok(len) => len,
             Err(_) => return false,
         };
-        
+
         let ip_num = match Self::ip_to_u32(ip) {
             Some(num) => num,
             None => return false,
         };
-        
+
         let network_num = match Self::ip_to_u32(network) {
             Some(num) => num,
             None => return false,
         };
-        
+
         let mask = if prefix_len == 0 {
             0
         } else {
             u32::MAX << (32 - prefix_len)
         };
-        
+
         (ip_num & mask) == (network_num & mask)
     }
-    
+
     fn ip_in_range(ip: &str, range: &str) -> bool {
         let parts: Vec<&str> = range.split('-').collect();
         if parts.len() != 2 {
             return false;
         }
-        
+
         let start = match Self::ip_to_u32(parts[0].trim()) {
             Some(num) => num,
             None => return false,
         };
-        
+
         let end = match Self::ip_to_u32(parts[1].trim()) {
             Some(num) => num,
             None => return false,
         };
-        
+
         let ip_num = match Self::ip_to_u32(ip) {
             Some(num) => num,
             None => return false,
         };
-        
+
         ip_num >= start && ip_num <= end
     }
-    
+
     fn ip_matches_wildcard(ip: &str, pattern: &str) -> bool {
         let ip_parts: Vec<&str> = ip.split('.').collect();
         let pattern_parts: Vec<&str> = pattern.split('.').collect();
-        
+
         if ip_parts.len() != 4 || pattern_parts.len() != 4 {
             return false;
         }
-        
+
         for i in 0..4 {
             if pattern_parts[i] != "*" && ip_parts[i] != pattern_parts[i] {
                 return false;
             }
         }
-        
+
         true
     }
-    
+
     fn ip_to_u32(ip: &str) -> Option<u32> {
         let parts: Vec<&str> = ip.split('.').collect();
         if parts.len() != 4 {
             return None;
         }
-        
+
         let mut result: u32 = 0;
         for part in parts {
             let octet: u32 = part.parse().ok()?;
@@ -336,7 +367,7 @@ impl BlacklistConfig {
             }
             result = (result << 8) | octet;
         }
-        
+
         Some(result)
     }
 }
@@ -374,7 +405,8 @@ impl DockerConfig {
         if self.auth {
             if self.auther.user.is_empty() || self.auther.pass.is_empty() {
                 return Err(ConfigError::Validation(
-                    "docker.auth is enabled but docker.auther.user or docker.auther.pass is empty".into(),
+                    "docker.auth is enabled but docker.auther.user or docker.auther.pass is empty"
+                        .into(),
                 ));
             }
         }

@@ -3,78 +3,89 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GitHub & Docker 代理服务</title>
+    <meta name="description" content="高性能 GitHub 文件加速下载和 Docker 镜像加速代理服务，提供快速、稳定的代理访问">
+    <meta name="keywords" content="GitHub加速,Docker加速,代理服务,镜像加速,文件下载">
+    <meta name="author" content="gh-proxy">
+    <meta name="theme-color" content="#2563eb">
+    
+    <!-- 预加载关键资源 -->
+    <link rel="preload" href="style.css" as="style">
+    <link rel="preload" href="app.js" as="script">
+    
+    <!-- 样式表 -->
     <link rel="stylesheet" href="style.css">
+    
+    <title>GitHub & Docker 代理服务 - 高速加速访问</title>
 </head>
 <body>
     <div class="container">
         <!-- Header -->
-        <header class="header">
+        <header class="header card" role="banner">
             <div class="logo">
-                <svg class="logo-icon" viewBox="0 0 24 24" fill="currentColor">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/>
                 </svg>
                 <h1>gh-proxy</h1>
             </div>
-            <div class="status-badge" id="statusBadge">
-                <span class="status-dot"></span>
+            <div class="status-badge" id="statusBadge" role="status" aria-live="polite">
+                <span class="status-dot" aria-hidden="true"></span>
                 <span>正在检查...</span>
             </div>
         </header>
 
         <!-- Config Info Cards -->
-        <div class="config-cards" id="configCards">
-            <div class="config-card">
-                <div class="config-icon">📦</div>
+        <section class="config-cards" id="configCards" aria-label="服务配置信息">
+            <article class="config-card card">
+                <div class="config-icon" aria-hidden="true">📦</div>
                 <div class="config-content">
                     <h3>文件大小限制</h3>
                     <p class="config-value" id="sizeLimit">-</p>
                     <span class="config-label">MB</span>
                 </div>
-            </div>
-            <div class="config-card">
-                <div class="config-icon">🐳</div>
+            </article>
+            <article class="config-card card">
+                <div class="config-icon" aria-hidden="true">🐳</div>
                 <div class="config-content">
                     <h3>Docker 代理</h3>
                     <p class="config-value" id="dockerEnabled">-</p>
                 </div>
-            </div>
-            <div class="config-card">
-                <div class="config-icon">🛡️</div>
+            </article>
+            <article class="config-card card">
+                <div class="config-icon" aria-hidden="true">🛡️</div>
                 <div class="config-content">
                     <h3>黑名单</h3>
                     <p class="config-value" id="blacklistEnabled">-</p>
                 </div>
-            </div>
-            <div class="config-card">
-                <div class="config-icon">✏️</div>
+            </article>
+            <article class="config-card card">
+                <div class="config-icon" aria-hidden="true">✏️</div>
                 <div class="config-content">
                     <h3>嵌套加速</h3>
                     <p class="config-value" id="editorEnabled">-</p>
                 </div>
-            </div>
-        </div>
+            </article>
+        </section>
 
         <!-- Usage Section -->
-        <div class="usage-section">
-            <div class="tabs">
-                <button class="tab-button active" data-tab="github">
-                    <svg class="tab-icon" viewBox="0 0 24 24" fill="currentColor">
+        <main class="usage-section" role="main">
+            <nav class="tabs" role="tablist" aria-label="代理服务类型">
+                <button class="tab-button active" data-tab="github" role="tab" aria-selected="true" aria-controls="github-content">
+                    <svg class="tab-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
                     </svg>
                     GitHub 加速
                 </button>
-                <button class="tab-button" data-tab="docker">
-                    <svg class="tab-icon" viewBox="0 0 24 24" fill="currentColor">
+                <button class="tab-button" data-tab="docker" role="tab" aria-selected="false" aria-controls="docker-content">
+                    <svg class="tab-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <path d="M13.983 11.078h2.119a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.119a.185.185 0 00-.185.185v1.888c0 .102.083.185.185.185m-2.954-5.43h2.118a.186.186 0 00.186-.186V3.574a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m0 2.716h2.118a.187.187 0 00.186-.186V6.29a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.887c0 .102.082.185.185.186m-2.93 0h2.12a.186.186 0 00.184-.186V6.29a.185.185 0 00-.185-.185H8.1a.185.185 0 00-.185.185v1.887c0 .102.083.185.185.186m-2.964 0h2.119a.186.186 0 00.185-.186V6.29a.185.185 0 00-.185-.185H5.136a.186.186 0 00-.186.185v1.887c0 .102.084.185.186.186m5.893 2.715h2.118a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m-2.93 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.083.185.185.185m-2.964 0h2.119a.185.185 0 00.185-.185V9.006a.185.185 0 00-.184-.186h-2.12a.186.186 0 00-.186.186v1.887c0 .102.084.185.186.185m-2.92 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.082.185.185.185M23.763 9.89c-.065-.051-.672-.51-1.954-.51-.338 0-.676.03-1.01.09-.248-1.827-1.66-2.782-1.688-2.815l-.344-.199-.226.327c-.284.438-.49.922-.612 1.43-.23.97-.09 1.882.403 2.661-.595.332-1.55.413-1.744.42H.751a.751.751 0 00-.75.748 11.376 11.376 0 00.692 4.062c.545 1.428 1.355 2.48 2.41 3.124 1.18.723 3.1 1.137 5.275 1.137.983.003 1.963-.086 2.93-.266a12.248 12.248 0 003.823-1.389c.98-.567 1.86-1.288 2.61-2.136 1.252-1.418 1.998-2.997 2.553-4.4h.221c1.372 0 2.215-.549 2.68-1.009.309-.293.55-.65.707-1.046l.098-.288z"/>
                     </svg>
                     Docker 加速
                 </button>
-            </div>
+            </nav>
 
             <!-- GitHub Tab Content -->
-            <div class="tab-content active" id="github-content">
-                <div class="usage-card">
+            <section class="tab-content active" id="github-content" role="tabpanel" aria-labelledby="github-tab">
+                <article class="usage-card card card-lg">
                     <h3>🚀 GitHub 文件加速</h3>
                     <p class="description">输入 GitHub 文件链接，生成加速下载地址</p>
                     
@@ -82,25 +93,26 @@
                     <div class="url-generator">
                         <div class="input-group">
                             <input 
-                                type="text" 
+                                type="url" 
                                 id="githubInput" 
                                 class="url-input" 
                                 placeholder="输入 GitHub 文件链接，例如: https://github.com/user/repo/blob/main/file.txt"
-                                autocomplete="off"
+                                autocomplete="url"
+                                aria-label="GitHub 文件链接"
                             />
-                            <button class="generate-btn" onclick="generateGithubUrl()">
-                                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <button class="generate-btn" onclick="generateGithubUrl()" aria-label="生成 GitHub 加速链接">
+                                <svg class="generate-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                                     <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
                                 </svg>
                                 生成
                             </button>
                         </div>
-                        <div id="githubResult" class="result-box" style="display: none;">
+                        <div id="githubResult" class="result-box" style="display: none;" role="region" aria-live="polite">
                             <div class="result-label">加速链接：</div>
                             <div class="result-content">
-                                <code id="githubResultText"></code>
-                                <button class="copy-result-btn" onclick="copyResult('github')">
-                                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <code class="result-code" id="githubResultText"></code>
+                                <button class="copy-result-btn" onclick="copyResult('github')" aria-label="复制 GitHub 加速链接">
+                                    <svg class="copy-result-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                                     </svg>
@@ -108,12 +120,12 @@
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
+                </article>
+            </section>
 
             <!-- Docker Tab Content -->
-            <div class="tab-content" id="docker-content">
-                <div class="usage-card" id="dockerSection">
+            <section class="tab-content" id="docker-content" role="tabpanel" aria-labelledby="docker-tab">
+                <article class="usage-card card card-lg" id="dockerSection">
                     <h3>🐳 Docker 镜像加速</h3>
                     <p class="description">输入 Docker 镜像名称，生成加速拉取命令</p>
                     
@@ -126,20 +138,21 @@
                                 class="url-input" 
                                 placeholder="输入镜像名称，例如: nginx:latest 或 ghcr.io/user/image:tag"
                                 autocomplete="off"
+                                aria-label="Docker 镜像名称"
                             />
-                            <button class="generate-btn" onclick="generateDockerUrl()">
-                                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <button class="generate-btn" onclick="generateDockerUrl()" aria-label="生成 Docker 加速命令">
+                                <svg class="generate-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                                     <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
                                 </svg>
                                 生成
                             </button>
                         </div>
-                        <div id="dockerResult" class="result-box" style="display: none;">
+                        <div id="dockerResult" class="result-box" style="display: none;" role="region" aria-live="polite">
                             <div class="result-label">加速命令：</div>
                             <div class="result-content">
-                                <code id="dockerResultText"></code>
-                                <button class="copy-result-btn" onclick="copyResult('docker')">
-                                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <code class="result-code" id="dockerResultText"></code>
+                                <button class="copy-result-btn" onclick="copyResult('docker')" aria-label="复制 Docker 加速命令">
+                                    <svg class="copy-result-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                                     </svg>
@@ -147,25 +160,33 @@
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
-        </div>
+                </article>
+            </section>
+        </main>
 
         <!-- Footer -->
-        <footer class="footer">
+        <footer class="footer" role="contentinfo">
             <p>gh-proxy - 高性能 GitHub & Docker 代理服务</p>
-            <p class="footer-links">
-                <a href="https://github.com" target="_blank">GitHub</a>
-                <span>·</span>
-                <a href="/healthz" target="_blank">健康检查</a>
-                <span>·</span>
-                <a href="/api/config" target="_blank">API 文档</a>
-            </p>
+            <nav class="footer-links" aria-label="页脚链接">
+                <a class="footer-link" href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
+                <span aria-hidden="true">·</span>
+                <a class="footer-link" href="/healthz" target="_blank" rel="noopener noreferrer">健康检查</a>
+                <span aria-hidden="true">·</span>
+                <a class="footer-link" href="/api/config" target="_blank" rel="noopener noreferrer">API 文档</a>
+            </nav>
         </footer>
     </div>
 
     <!-- Toast Notification -->
-    <div class="toast" id="toast"></div>
+    <div class="toast" id="toast" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" role="status" aria-live="polite">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p class="loading-text">正在加载配置...</p>
+        </div>
+    </div>
 
     <script src="app.js"></script>
 </body>
