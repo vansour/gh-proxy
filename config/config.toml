@@ -15,7 +15,7 @@ level = "info" # debug, info, warn, error, none
 token = ""
 
 [blacklist]
-enabled = false
+enabled = true
 blacklistFile = "/app/config/blacklist.json"
 
 
@@ -23,4 +23,5 @@ blacklistFile = "/app/config/blacklist.json"
 enabled = true
 auth = false
 [docker.auther]
-user1 = "testpass"
+user = ""
+pass = ""

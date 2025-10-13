@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::Path, time::Duration};
+use std::{fs, path::Path, time::Duration};
 
 use serde::Deserialize;
 use serde_json;
@@ -166,6 +166,13 @@ pub struct BlacklistConfig {
     pub blacklist_file: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct BlacklistFile {
+    #[allow(dead_code)]
+    version: u32,
+    rules: Vec<String>,
+}
+
 impl Default for BlacklistConfig {
     fn default() -> Self {
         Self {
@@ -183,9 +190,15 @@ impl BlacklistConfig {
         
         match fs::read_to_string(&self.blacklist_file) {
             Ok(content) => {
-                let list: Vec<String> = serde_json::from_str(&content)
-                    .unwrap_or_else(|_| Vec::new());
-                Ok(list)
+                // Try to parse as the new format with version and rules
+                if let Ok(blacklist) = serde_json::from_str::<BlacklistFile>(&content) {
+                    Ok(blacklist.rules)
+                } else {
+                    // Fallback to old format (direct array)
+                    let list: Vec<String> = serde_json::from_str(&content)
+                        .unwrap_or_else(|_| Vec::new());
+                    Ok(list)
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Ok(Vec::new())
@@ -194,15 +207,137 @@ impl BlacklistConfig {
         }
     }
     
-    pub fn is_blacklisted(&self, url: &str) -> bool {
+    pub fn is_ip_blacklisted(&self, ip: &str) -> bool {
         if !self.enabled {
             return false;
         }
-        // This is a placeholder - in production, you'd cache the blacklist
-        self.load_blacklist()
-            .unwrap_or_default()
-            .iter()
-            .any(|pattern| url.contains(pattern))
+        
+        let rules = match self.load_blacklist() {
+            Ok(rules) => rules,
+            Err(_) => return false,
+        };
+        
+        for rule in rules.iter() {
+            if Self::ip_matches_rule(ip, rule) {
+                return true;
+            }
+        }
+        
+        false
+    }
+    
+    fn ip_matches_rule(ip: &str, rule: &str) -> bool {
+        // Exact match
+        if ip == rule {
+            return true;
+        }
+        
+        // CIDR notation (e.g., 192.168.1.0/24)
+        if rule.contains('/') {
+            return Self::ip_in_cidr(ip, rule);
+        }
+        
+        // IP range (e.g., 192.168.1.1-192.168.1.255)
+        if rule.contains('-') {
+            return Self::ip_in_range(ip, rule);
+        }
+        
+        // Wildcard (e.g., 192.168.1.*)
+        if rule.contains('*') {
+            return Self::ip_matches_wildcard(ip, rule);
+        }
+        
+        false
+    }
+    
+    fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
+        let parts: Vec<&str> = cidr.split('/').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+        
+        let network = parts[0];
+        let prefix_len: u32 = match parts[1].parse() {
+            Ok(len) => len,
+            Err(_) => return false,
+        };
+        
+        let ip_num = match Self::ip_to_u32(ip) {
+            Some(num) => num,
+            None => return false,
+        };
+        
+        let network_num = match Self::ip_to_u32(network) {
+            Some(num) => num,
+            None => return false,
+        };
+        
+        let mask = if prefix_len == 0 {
+            0
+        } else {
+            u32::MAX << (32 - prefix_len)
+        };
+        
+        (ip_num & mask) == (network_num & mask)
+    }
+    
+    fn ip_in_range(ip: &str, range: &str) -> bool {
+        let parts: Vec<&str> = range.split('-').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+        
+        let start = match Self::ip_to_u32(parts[0].trim()) {
+            Some(num) => num,
+            None => return false,
+        };
+        
+        let end = match Self::ip_to_u32(parts[1].trim()) {
+            Some(num) => num,
+            None => return false,
+        };
+        
+        let ip_num = match Self::ip_to_u32(ip) {
+            Some(num) => num,
+            None => return false,
+        };
+        
+        ip_num >= start && ip_num <= end
+    }
+    
+    fn ip_matches_wildcard(ip: &str, pattern: &str) -> bool {
+        let ip_parts: Vec<&str> = ip.split('.').collect();
+        let pattern_parts: Vec<&str> = pattern.split('.').collect();
+        
+        if ip_parts.len() != 4 || pattern_parts.len() != 4 {
+            return false;
+        }
+        
+        for i in 0..4 {
+            if pattern_parts[i] != "*" && ip_parts[i] != pattern_parts[i] {
+                return false;
+            }
+        }
+        
+        true
+    }
+    
+    fn ip_to_u32(ip: &str) -> Option<u32> {
+        let parts: Vec<&str> = ip.split('.').collect();
+        if parts.len() != 4 {
+            return None;
+        }
+        
+        let mut result: u32 = 0;
+        for part in parts {
+            let octet: u32 = part.parse().ok()?;
+            if octet > 255 {
+                return None;
+            }
+            result = (result << 8) | octet;
+        }
+        
+        Some(result)
     }
 }
 
@@ -212,7 +347,15 @@ pub struct DockerConfig {
     pub enabled: bool,
     pub auth: bool,
     #[serde(default)]
-    pub auther: HashMap<String, String>,
+    pub auther: DockerAuther,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DockerAuther {
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub pass: String,
 }
 
 impl Default for DockerConfig {
@@ -220,7 +363,7 @@ impl Default for DockerConfig {
         Self {
             enabled: true,
             auth: false,
-            auther: HashMap::new(),
+            auther: DockerAuther::default(),
         }
     }
 }
@@ -228,10 +371,12 @@ impl Default for DockerConfig {
 impl DockerConfig {
     fn finalize(&mut self) -> Result<(), ConfigError> {
         // Validate auth configuration
-        if self.auth && self.auther.is_empty() {
-            return Err(ConfigError::Validation(
-                "docker.auth is enabled but no auther credentials provided".into(),
-            ));
+        if self.auth {
+            if self.auther.user.is_empty() || self.auther.pass.is_empty() {
+                return Err(ConfigError::Validation(
+                    "docker.auth is enabled but docker.auther.user or docker.auther.pass is empty".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -258,11 +403,11 @@ impl DockerConfig {
         allowed.iter().any(|&h| h == registry)
     }
 
-    pub fn get_auth(&self, username: &str) -> Option<&str> {
+    pub fn verify_auth(&self, username: &str, password: &str) -> bool {
         if !self.auth {
-            return None;
+            return true; // Auth disabled, allow all
         }
-        self.auther.get(username).map(|s| s.as_str())
+        username == self.auther.user && password == self.auther.pass
     }
 }
 

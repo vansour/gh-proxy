@@ -8,6 +8,8 @@ const API_ENDPOINTS = {
 // 状态管理
 let appConfig = null;
 let currentDomain = window.location.host;
+let currentProtocol = window.location.protocol; // 'http:' or 'https:'
+let isHttps = currentProtocol === 'https:';
 
 // 初始化应用
 document.addEventListener('DOMContentLoaded', async () => {
@@ -15,6 +17,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadConfig();
     initializeTabs();
     updateDomainInExamples();
+    checkDockerHttpWarning();
 });
 
 // 检查服务器状态
@@ -69,20 +72,31 @@ function updateConfigUI() {
     
     // 更新文件大小限制
     const sizeLimit = appConfig.server?.sizeLimit || 0;
-    document.getElementById('sizeLimit').textContent = sizeLimit;
-    document.getElementById('sizeLimitTip').textContent = sizeLimit;
+    const sizeLimitEl = document.getElementById('sizeLimit');
+    if (sizeLimitEl) {
+        sizeLimitEl.textContent = sizeLimit;
+    }
     
     // 更新 Docker 状态
     const dockerEnabled = appConfig.docker?.enabled ? '✅ 已启用' : '❌ 未启用';
-    document.getElementById('dockerEnabled').textContent = dockerEnabled;
+    const dockerEnabledEl = document.getElementById('dockerEnabled');
+    if (dockerEnabledEl) {
+        dockerEnabledEl.textContent = dockerEnabled;
+    }
     
     // 更新黑名单状态
     const blacklistEnabled = appConfig.blacklist?.enabled ? '✅ 已启用' : '❌ 未启用';
-    document.getElementById('blacklistEnabled').textContent = blacklistEnabled;
+    const blacklistEnabledEl = document.getElementById('blacklistEnabled');
+    if (blacklistEnabledEl) {
+        blacklistEnabledEl.textContent = blacklistEnabled;
+    }
     
     // 更新编辑器状态
     const editorEnabled = appConfig.shell?.editor ? '✅ 已启用' : '❌ 未启用';
-    document.getElementById('editorEnabled').textContent = editorEnabled;
+    const editorEnabledEl = document.getElementById('editorEnabled');
+    if (editorEnabledEl) {
+        editorEnabledEl.textContent = editorEnabled;
+    }
     
     // 如果 Docker 未启用，禁用 Docker 标签
     if (!appConfig.docker?.enabled) {
@@ -97,11 +111,13 @@ function updateConfigUI() {
 
 // 设置默认配置
 function setDefaultConfig() {
-    document.getElementById('sizeLimit').textContent = '-';
-    document.getElementById('sizeLimitTip').textContent = '-';
-    document.getElementById('dockerEnabled').textContent = '-';
-    document.getElementById('blacklistEnabled').textContent = '-';
-    document.getElementById('editorEnabled').textContent = '-';
+    const elements = ['sizeLimit', 'dockerEnabled', 'blacklistEnabled', 'editorEnabled'];
+    elements.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = '-';
+        }
+    });
 }
 
 // 初始化标签页
@@ -191,7 +207,13 @@ async function copyToClipboard(text) {
 function showToast(message, type = 'success') {
     const toast = document.getElementById('toast');
     
-    toast.textContent = message;
+    // 支持 HTML 内容（用于多行消息）
+    if (message.includes('<br>')) {
+        toast.innerHTML = message;
+    } else {
+        toast.textContent = message;
+    }
+    
     toast.className = `toast ${type}`;
     
     // 显示 toast
@@ -199,10 +221,13 @@ function showToast(message, type = 'success') {
         toast.classList.add('show');
     }, 10);
     
-    // 3秒后隐藏
+    // 根据内容长度调整显示时间
+    const displayTime = message.length > 50 ? 5000 : 3000;
+    
+    // 隐藏 toast
     setTimeout(() => {
         toast.classList.remove('show');
-    }, 3000);
+    }, displayTime);
 }
 
 // 自动刷新状态（每30秒）
@@ -215,5 +240,268 @@ setInterval(async () => {
     await loadConfig();
 }, 300000);
 
+// 验证是否是 GitHub 文件链接
+function isValidGithubFileUrl(url) {
+    try {
+        let urlToParse = url;
+        
+        // 如果不是完整 URL，构造一个
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            if (url.startsWith('github.com') || url.startsWith('raw.githubusercontent.com')) {
+                urlToParse = 'https://' + url;
+            } else {
+                urlToParse = 'https://github.com/' + url;
+            }
+        }
+        
+        const urlObj = new URL(urlToParse);
+        const pathParts = urlObj.pathname.split('/').filter(p => p);
+        
+        // 检查是否是文件链接
+        // 有效的文件链接格式:
+        // 1. github.com/user/repo/blob/branch/path/to/file
+        // 2. github.com/user/repo/raw/branch/path/to/file
+        // 3. github.com/user/repo/releases/download/tag/file
+        // 4. raw.githubusercontent.com/user/repo/branch/path/to/file
+        
+        // raw.githubusercontent.com 域名
+        if (urlObj.hostname === 'raw.githubusercontent.com') {
+            // 格式：/user/repo/branch/path/to/file 或 /user/repo/refs/heads/branch/path/to/file
+            // 至少需要: /user/repo/file (3段)
+            if (pathParts.length >= 3) {
+                return { valid: true };
+            }
+            return { 
+                valid: false, 
+                message: '请输入完整的文件链接<br>示例：https://raw.githubusercontent.com/user/repo/main/file.txt' 
+            };
+        }
+        
+        // github.com 域名
+        if (urlObj.hostname === 'github.com' || urlObj.hostname === 'www.github.com') {
+            // 至少需要 5 段：user/repo/blob/branch/file
+            if (pathParts.length < 5) {
+                return { 
+                    valid: false, 
+                    message: '请输入完整的文件链接<br>示例：https://github.com/user/repo/blob/main/file.txt' 
+                };
+            }
+            
+            const type = pathParts[2]; // user/repo/TYPE/...
+            
+            // 必须包含 blob, raw 或 releases/download
+            if (type !== 'blob' && type !== 'raw' && 
+                !(type === 'releases' && pathParts[3] === 'download')) {
+                return { 
+                    valid: false, 
+                    message: '请输入文件链接，而不是仓库主页或其他页面<br>支持格式：<br>• /user/repo/blob/branch/file<br>• /user/repo/raw/branch/file<br>• /user/repo/releases/download/tag/file' 
+                };
+            }
+            
+            return { valid: true };
+        }
+        
+        // 必须是 GitHub 相关域名
+        if (!urlObj.hostname.includes('github')) {
+            return { valid: false, message: '请输入有效的 GitHub 链接' };
+        }
+        
+        // 其他 GitHub 子域名，暂不支持
+        return { 
+            valid: false, 
+            message: '仅支持 github.com 和 raw.githubusercontent.com 域名' 
+        };
+        
+    } catch (error) {
+        console.error('URL validation error:', error);
+        return { valid: false, message: '链接格式错误' };
+    }
+}
+
+// 生成 GitHub 加速链接
+function generateGithubUrl() {
+    const input = document.getElementById('githubInput');
+    const resultBox = document.getElementById('githubResult');
+    const resultText = document.getElementById('githubResultText');
+    
+    const url = input.value.trim();
+    
+    if (!url) {
+        showToast('请输入 GitHub 链接', 'error');
+        return;
+    }
+    
+    // 验证是否是 GitHub 文件链接
+    const validation = isValidGithubFileUrl(url);
+    if (!validation.valid) {
+        showToast(validation.message, 'error');
+        return;
+    }
+    
+    // 生成加速链接
+    let acceleratedUrl = '';
+    
+    try {
+        // 获取当前协议 (http: 或 https:)，去掉冒号
+        const protocol = currentProtocol.replace(':', '');
+        
+        // 处理不同格式的 GitHub URL
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+            const urlObj = new URL(url);
+            
+            // 完整 URL
+            if (urlObj.hostname === 'raw.githubusercontent.com') {
+                // raw.githubusercontent.com/user/repo/branch/file 
+                // -> http(s)://domain.com/raw.githubusercontent.com/user/repo/branch/file
+                acceleratedUrl = `${protocol}://${currentDomain}/${urlObj.hostname}${urlObj.pathname}${urlObj.search}${urlObj.hash}`;
+            } else if (urlObj.hostname === 'github.com' || urlObj.hostname === 'www.github.com') {
+                // github.com/user/repo/blob/branch/file
+                // -> http(s)://domain.com/github.com/user/repo/blob/branch/file
+                acceleratedUrl = `${protocol}://${currentDomain}/${urlObj.hostname}${urlObj.pathname}${urlObj.search}${urlObj.hash}`;
+            } else {
+                // 其他 GitHub 域名
+                acceleratedUrl = `${protocol}://${currentDomain}/${urlObj.hostname}${urlObj.pathname}${urlObj.search}${urlObj.hash}`;
+            }
+        } else if (url.startsWith('raw.githubusercontent.com')) {
+            // 域名开头: raw.githubusercontent.com/user/repo -> http(s)://domain.com/raw.githubusercontent.com/user/repo
+            acceleratedUrl = `${protocol}://${currentDomain}/${url}`;
+        } else if (url.startsWith('github.com')) {
+            // 域名开头: github.com/user/repo -> http(s)://domain.com/github.com/user/repo
+            acceleratedUrl = `${protocol}://${currentDomain}/${url}`;
+        } else {
+            // 相对路径: user/repo -> http(s)://domain.com/github.com/user/repo
+            acceleratedUrl = `${protocol}://${currentDomain}/github.com/${url}`;
+        }
+        
+        // 显示结果
+        resultText.textContent = acceleratedUrl;
+        resultBox.style.display = 'block';
+        showToast('加速链接生成成功 ✓', 'success');
+        
+    } catch (error) {
+        console.error('URL parsing error:', error);
+        showToast('链接格式错误', 'error');
+    }
+}
+
+// 生成 Docker 加速命令
+function generateDockerUrl() {
+    const input = document.getElementById('dockerInput');
+    const resultBox = document.getElementById('dockerResult');
+    const resultText = document.getElementById('dockerResultText');
+    
+    const imageName = input.value.trim();
+    
+    if (!imageName) {
+        showToast('请输入 Docker 镜像名称', 'error');
+        return;
+    }
+    
+    // 检查是否使用 HTTP 访问
+    if (!isHttps) {
+        showToast('⚠️ Docker 代理需要 HTTPS 协议<br>当前使用 HTTP 访问，Docker 客户端不支持非 HTTPS 的镜像仓库<br>请使用 HTTPS 访问本站点', 'error');
+        return;
+    }
+    
+    // 检查 Docker 是否启用
+    if (appConfig && !appConfig.docker?.enabled) {
+        showToast('Docker 代理功能未启用', 'error');
+        return;
+    }
+    
+    // 生成加速命令
+    let acceleratedCommand = '';
+    
+    try {
+        // 处理不同格式的镜像名称
+        if (imageName.includes('/')) {
+            // 包含仓库地址: ghcr.io/user/image:tag 或 user/image:tag
+            if (imageName.includes('.')) {
+                // 包含域名的完整镜像名称
+                acceleratedCommand = `docker pull ${currentDomain}/${imageName}`;
+            } else {
+                // Docker Hub 用户镜像
+                acceleratedCommand = `docker pull ${currentDomain}/${imageName}`;
+            }
+        } else {
+            // 仅镜像名: nginx:latest
+            acceleratedCommand = `docker pull ${currentDomain}/${imageName}`;
+        }
+        
+        // 显示结果
+        resultText.textContent = acceleratedCommand;
+        resultBox.style.display = 'block';
+        showToast('加速命令生成成功 ✓', 'success');
+        
+    } catch (error) {
+        console.error('Docker command generation error:', error);
+        showToast('镜像名称格式错误', 'error');
+    }
+}
+
+// 复制生成的结果
+function copyResult(type) {
+    const resultText = type === 'github' 
+        ? document.getElementById('githubResultText').textContent
+        : document.getElementById('dockerResultText').textContent;
+    
+    if (resultText) {
+        copyToClipboard(resultText);
+        showToast('已复制到剪贴板 ✓', 'success');
+    }
+}
+
+// 添加回车键支持
+document.addEventListener('DOMContentLoaded', () => {
+    const githubInput = document.getElementById('githubInput');
+    const dockerInput = document.getElementById('dockerInput');
+    
+    if (githubInput) {
+        githubInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                generateGithubUrl();
+            }
+        });
+    }
+    
+    if (dockerInput) {
+        dockerInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                generateDockerUrl();
+            }
+        });
+    }
+});
+
+// 检查 Docker HTTP 警告
+function checkDockerHttpWarning() {
+    if (!isHttps) {
+        const dockerTab = document.querySelector('[data-tab="docker"]');
+        if (dockerTab) {
+            // 在 Docker 标签页添加警告标识
+            const warningBadge = document.createElement('span');
+            warningBadge.className = 'http-warning-badge';
+            warningBadge.textContent = '⚠️';
+            warningBadge.title = 'Docker 代理需要 HTTPS';
+            dockerTab.appendChild(warningBadge);
+        }
+        
+        // 在 Docker 输入框区域显示警告提示
+        const dockerSection = document.getElementById('dockerSection');
+        if (dockerSection) {
+            const warningDiv = document.createElement('div');
+            warningDiv.className = 'http-warning-message';
+            warningDiv.innerHTML = `
+                <strong>⚠️ 警告：</strong> 当前使用 HTTP 协议访问<br>
+                Docker 代理功能需要 HTTPS 协议才能正常工作
+            `;
+            dockerSection.insertBefore(warningDiv, dockerSection.firstChild);
+        }
+    }
+}
+
 // 导出全局函数供 HTML 使用
 window.copyExample = copyExample;
+window.generateGithubUrl = generateGithubUrl;
+window.generateDockerUrl = generateDockerUrl;
+window.copyResult = copyResult;

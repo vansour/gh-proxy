@@ -237,19 +237,21 @@ async fn fallback_proxy(
     
     info!("Fallback proxy request: {} {}", req.method(), path);
 
-    // Check if blacklist is enabled
+    // Check if blacklist is enabled and check client IP
     if state.settings.blacklist.enabled {
-        if state.settings.blacklist.is_blacklisted(path) {
-            warn!("Blocked request to blacklisted path: {}", path);
-            let error_msg = format!(
-                "Access Denied\n\nThe requested path is blacklisted: {}\n\nThis path has been blocked by the proxy administrator.\n",
-                path
-            );
-            return Ok(Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(error_msg))
-                .unwrap());
+        if let Some(client_ip) = extract_client_ip(&req) {
+            if state.settings.blacklist.is_ip_blacklisted(&client_ip) {
+                warn!("Blocked request from blacklisted IP: {}", client_ip);
+                let error_msg = format!(
+                    "Access Denied\n\nYour IP address has been blacklisted: {}\n\nThis IP has been blocked by the proxy administrator.\n\nIf you believe this is an error, please contact the administrator.\n",
+                    client_ip
+                );
+                return Ok(Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(Body::from(error_msg))
+                    .unwrap());
+            }
         }
     }
 
@@ -673,6 +675,30 @@ impl std::io::Write for DualWriterGuard {
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.lock().unwrap().flush()
     }
+}
+
+/// Extract client IP from request headers
+fn extract_client_ip(req: &Request<Body>) -> Option<String> {
+    // Try X-Forwarded-For header first (for proxied requests)
+    if let Some(xff) = req.headers().get("x-forwarded-for") {
+        if let Ok(xff_str) = xff.to_str() {
+            // Take the first IP in the chain
+            if let Some(ip) = xff_str.split(',').next() {
+                return Some(ip.trim().to_string());
+            }
+        }
+    }
+    
+    // Try X-Real-IP header
+    if let Some(xri) = req.headers().get("x-real-ip") {
+        if let Ok(ip) = xri.to_str() {
+            return Some(ip.trim().to_string());
+        }
+    }
+    
+    // TODO: Extract from connection info if available
+    // For now, return None if no headers present
+    None
 }
 
 fn setup_tracing(log_config: &config::LogConfig) {

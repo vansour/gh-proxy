@@ -366,7 +366,7 @@ pub fn verify_docker_auth(headers: &HeaderMap, docker_config: &DockerConfig) -> 
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(credentials) {
                     if let Ok(creds_str) = String::from_utf8(decoded) {
                         if let Some((username, password)) = creds_str.split_once(':') {
-                            return docker_config.get_auth(username) == Some(password);
+                            return docker_config.verify_auth(username, password);
                         }
                     }
                 }
