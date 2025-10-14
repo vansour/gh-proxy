@@ -451,10 +451,20 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
     // Remove leading slash
     let path = path.trim_start_matches('/');
 
+    // Fix common URL malformation: https:/ -> https://
+    // This handles cases where a single slash is missing in the URL
+    let path = if path.starts_with("https:/") && !path.starts_with("https://") {
+        format!("https://{}", &path[7..])
+    } else if path.starts_with("http:/") && !path.starts_with("http://") {
+        format!("http://{}", &path[6..])
+    } else {
+        path.to_string()
+    };
+
     // Check if it's a full URL (http:// or https://)
     if path.starts_with("http://") || path.starts_with("https://") {
         // Convert GitHub blob URLs to raw URLs
-        let converted = github::convert_github_blob_to_raw(path);
+        let converted = github::convert_github_blob_to_raw(&path);
         return converted.parse().map_err(|e| format!("Invalid URL: {}", e));
     }
 
@@ -468,7 +478,7 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
             .map_err(|e| format!("Invalid GitHub URL: {}", e));
     }
 
-    Err(path.to_string())
+    Err(path)
 }
 
 fn is_shell_script(uri: &Uri) -> bool {
