@@ -25,8 +25,17 @@ COPY --from=builder /app/target/release/gh-proxy /app/gh-proxy
 
 # Copy static files
 COPY web /app/web
-COPY config /app/config
+
+# Copy default config to a separate location
+COPY config /app/config-default
+
+# Create empty config directory for volume mount
+RUN mkdir -p /app/config
+
+# Copy entrypoint script
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 8080
 
-CMD ["/app/gh-proxy"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
