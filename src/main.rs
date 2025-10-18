@@ -17,7 +17,7 @@ use tokio::signal;
 use tokio::sync::OnceCell;
 use tower::service_fn;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 mod api;
 mod config;
@@ -381,7 +381,11 @@ async fn check_blacklist(state: &AppState, client_ip: Option<String>) -> ProxyRe
 /// Resolve the target URI for fallback proxy
 fn resolve_target_uri_with_validation(uri: &Uri) -> ProxyResult<Uri> {
     let target_uri =
-        resolve_fallback_target(uri).map_err(|msg| ProxyError::InvalidGitHubUrl(msg))?;
+        resolve_fallback_target(uri).map_err(|msg| {
+            // Log at debug level instead of error for probe requests
+            debug!("Fallback target resolution failed: {}", msg);
+            ProxyError::InvalidGitHubUrl(msg)
+        })?;
 
     // Check if it's a GitHub repository homepage
     if github::is_github_repo_homepage(target_uri.to_string().as_str()) {
@@ -410,7 +414,9 @@ async fn handle_shell_script(
 #[instrument(skip_all)]
 async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
-    info!("Fallback proxy request: {} {}", req.method(), path);
+    let method = req.method();
+    
+    info!("Fallback proxy request: {} {}", method, path);
 
     // Get the Host header for proxy URL generation
     let proxy_host = req
@@ -430,7 +436,18 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
     // Resolve target URI
     let target_uri = match resolve_target_uri_with_validation(req.uri()) {
         Ok(uri) => uri,
-        Err(error) => return error_response(error),
+        Err(_error) => {
+            // For invalid paths that aren't valid GitHub/HTTP URLs, return 404 with debug info
+            warn!("Path is not a valid proxy target (404 Not Found): {}", path);
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Body::from(format!(
+                    "404 Not Found\n\nThe path '{}' is not a valid proxy target.\n\nSupported formats:\n- https://github.com/owner/repo/...\n- https://raw.githubusercontent.com/...\n- http(s)://example.com/...\n",
+                    path
+                )))
+                .unwrap();
+        }
     };
 
     // Proxy request
@@ -486,7 +503,9 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
             .map_err(|e| format!("Invalid GitHub URL: {}", e));
     }
 
-    Err(path)
+    // Return error with path for logging purposes
+    // This will be converted to 404 in the fallback handler
+    Err(format!("No valid target found for path: {}", path))
 }
 
 fn is_shell_script(uri: &Uri) -> bool {
