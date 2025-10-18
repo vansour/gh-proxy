@@ -98,6 +98,10 @@ impl ProxyError {
                 "Invalid Request\n\nThe path '{}' is not a valid proxy target.\n\nSupported formats:\n- https://github.com/owner/repo/...\n- http://example.com/...\n- github.com/owner/repo/...\n\nOr use specific endpoints:\n- /github/* for GitHub resources\n- /docker/* for Docker images\n",
                 path
             ),
+            ProxyError::Http(e) => format!(
+                "Connection Error\n\nFailed to connect to the target server.\n\nError details: {}\n\nPossible causes:\n- DNS resolution failure\n- Network connectivity issues\n- Firewall blocking outbound connections\n- Target server is down\n\nTroubleshooting:\n1. Check container logs: docker-compose logs -f\n2. Test DNS: docker exec gh-proxy nslookup raw.githubusercontent.com\n3. Test connection: docker exec gh-proxy curl -v https://raw.githubusercontent.com\n",
+                e
+            ),
             _ => format!("{}\n\nPlease check the URL and try again.\n", self),
         }
     }
@@ -226,6 +230,10 @@ fn build_client(
     // Configure connection pool
     http_connector.set_keepalive(Some(server.pool_idle_timeout()));
     http_connector.set_nodelay(true);
+    http_connector.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
+    
+    // Enable both IPv4 and IPv6
+    http_connector.enforce_http(false);
 
     let connector = HttpsConnectorBuilder::new()
         .with_webpki_roots()
@@ -643,7 +651,10 @@ pub async fn proxy_request(
         .client
         .request(req)
         .await
-        .map_err(|e| ProxyError::Http(Box::new(e)))?;
+        .map_err(|e| {
+            error!("Failed to connect to {}: {}", target_uri, e);
+            ProxyError::Http(Box::new(e))
+        })?;
 
     let status = response.status();
     let headers = response.headers().clone();

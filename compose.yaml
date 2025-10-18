@@ -11,3 +11,8 @@ services:
     volumes:
       - ./config:/app/config
       - ./logs:/app/logs
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
+    network_mode: bridge

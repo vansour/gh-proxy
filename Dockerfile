@@ -15,9 +15,10 @@ RUN cargo build --release
 FROM debian:trixie-slim
 WORKDIR /app
 
-# Install CA certificates for HTTPS connections
+# Install CA certificates for HTTPS connections and debugging tools
 RUN apt-get update && \
-    apt-get install -y ca-certificates && \
+    apt-get install -y ca-certificates openssl curl iputils-ping dnsutils && \
+    update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled binary
