@@ -192,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/gh-proxy.png", get(serve_static_file))
         .route("/api/config", get(api::get_config))
         .route("/v2", any(docker::docker_v2_root))
+        .route("/v2/", any(docker::docker_v2_root))
         .route("/v2/{*path}", any(docker::docker_v2_proxy))
         .route("/github/{*path}", any(github::github_proxy))
         .route("/docker/{*path}", any(docker::docker_proxy))
@@ -231,7 +232,7 @@ fn build_client(
     http_connector.set_keepalive(Some(server.pool_idle_timeout()));
     http_connector.set_nodelay(true);
     http_connector.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
-    
+
     // Enable both IPv4 and IPv6
     http_connector.enforce_http(false);
 
@@ -380,12 +381,11 @@ async fn check_blacklist(state: &AppState, client_ip: Option<String>) -> ProxyRe
 
 /// Resolve the target URI for fallback proxy
 fn resolve_target_uri_with_validation(uri: &Uri) -> ProxyResult<Uri> {
-    let target_uri =
-        resolve_fallback_target(uri).map_err(|msg| {
-            // Log at debug level instead of error for probe requests
-            debug!("Fallback target resolution failed: {}", msg);
-            ProxyError::InvalidGitHubUrl(msg)
-        })?;
+    let target_uri = resolve_fallback_target(uri).map_err(|msg| {
+        // Log at debug level instead of error for probe requests
+        debug!("Fallback target resolution failed: {}", msg);
+        ProxyError::InvalidGitHubUrl(msg)
+    })?;
 
     // Check if it's a GitHub repository homepage
     if github::is_github_repo_homepage(target_uri.to_string().as_str()) {
@@ -395,27 +395,45 @@ fn resolve_target_uri_with_validation(uri: &Uri) -> ProxyResult<Uri> {
     Ok(target_uri)
 }
 
-/// Handle shell script processing if enabled
+/// Handle shell script and HTML response processing if enabled
 async fn handle_shell_script(
     state: &AppState,
     response: Response<Body>,
     target_uri: &Uri,
     proxy_host: &str,
 ) -> ProxyResult<Response<Body>> {
-    if !state.settings.shell.editor || !is_shell_script(target_uri) {
+    let is_shell = is_shell_script(target_uri);
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    let is_html = content_type.contains("text/html") || content_type.contains("application/xhtml");
+
+    if !state.settings.shell.editor {
         return Ok(response);
     }
 
-    process_shell_script_response(response, proxy_host)
-        .await
-        .map_err(|e| ProxyError::ProcessingError(e))
+    // Process shell scripts or HTML responses to inject proxy URLs
+    if is_shell {
+        process_shell_script_response(response, proxy_host)
+            .await
+            .map_err(|e| ProxyError::ProcessingError(e))
+    } else if is_html {
+        process_html_response(response, proxy_host)
+            .await
+            .map_err(|e| ProxyError::ProcessingError(e))
+    } else {
+        Ok(response)
+    }
 }
 
 #[instrument(skip_all)]
 async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
     let method = req.method();
-    
+
     info!("Fallback proxy request: {} {}", method, path);
 
     // Get the Host header for proxy URL generation
@@ -637,6 +655,93 @@ fn add_proxy_to_github_urls(content: &str, proxy_host: &str) -> String {
     result
 }
 
+async fn process_html_response(
+    response: Response<Body>,
+    proxy_host: &str,
+) -> Result<Response<Body>, String> {
+    use http_body_util::BodyExt;
+
+    // Get the response status and headers
+    let (parts, body) = response.into_parts();
+
+    // Read the body
+    let body_bytes = body
+        .collect()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?
+        .to_bytes();
+
+    // Try to convert to string, if it fails, return the original bytes
+    let content = match String::from_utf8(body_bytes.to_vec()) {
+        Ok(text) => {
+            info!(
+                "Processing HTML response ({} bytes), injecting proxy URLs with host: {}",
+                text.len(),
+                proxy_host
+            );
+            let result = add_proxy_to_html_urls(&text, proxy_host);
+            info!("Result: {} bytes", result.len());
+            result
+        }
+        Err(e) => {
+            warn!(
+                "HTML response contains non-UTF-8 data, skipping processing: {}",
+                e
+            );
+            return Ok(Response::from_parts(parts, Body::from(body_bytes)));
+        }
+    };
+
+    // Build the response with the modified content
+    // Must update Content-Length header since we modified the content
+    let mut response = Response::from_parts(parts, Body::from(content.clone()));
+
+    // Update Content-Length to match the new body size
+    response.headers_mut().insert(
+        hyper::header::CONTENT_LENGTH,
+        hyper::header::HeaderValue::from_str(&content.len().to_string())
+            .unwrap_or(hyper::header::HeaderValue::from_static("0")),
+    );
+
+    Ok(response)
+}
+
+fn add_proxy_to_html_urls(content: &str, proxy_host: &str) -> String {
+    use regex::Regex;
+
+    // Determine the protocol based on proxy_host or default to https
+    let proxy_url = if proxy_host.starts_with("http://") || proxy_host.starts_with("https://") {
+        proxy_host.to_string()
+    } else if proxy_host.starts_with("localhost") || proxy_host.contains("127.0.0.1") {
+        format!("http://{}", proxy_host)
+    } else {
+        format!("https://{}", proxy_host)
+    };
+
+    // Pattern for GitHub URLs in HTML (in href, src, data attributes, etc.)
+    // This will match both raw.githubusercontent.com and github.com URLs
+    let github_url_pattern =
+        Regex::new(r#"(https?://(raw\.githubusercontent\.com|github\.com)/[^\s"'<>]+)"#).unwrap();
+
+    let mut result = content.to_string();
+
+    // Replace all GitHub URLs with proxied versions
+    result = github_url_pattern
+        .replace_all(&result, |caps: &regex::Captures| {
+            let url = &caps[1];
+            if url.contains(proxy_host) {
+                // Already proxied, don't double-proxy
+                url.to_string()
+            } else {
+                // Wrap with proxy URL
+                format!("{}/{}", proxy_url, url)
+            }
+        })
+        .to_string();
+
+    result
+}
+
 /// Core proxy request handler
 pub async fn proxy_request(
     state: &AppState,
@@ -666,14 +771,10 @@ pub async fn proxy_request(
     info!("Sending request to: {}", target_uri);
 
     // Send request
-    let response = state
-        .client
-        .request(req)
-        .await
-        .map_err(|e| {
-            error!("Failed to connect to {}: {}", target_uri, e);
-            ProxyError::Http(Box::new(e))
-        })?;
+    let response = state.client.request(req).await.map_err(|e| {
+        error!("Failed to connect to {}: {}", target_uri, e);
+        ProxyError::Http(Box::new(e))
+    })?;
 
     let status = response.status();
     let headers = response.headers().clone();
