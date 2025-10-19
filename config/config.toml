@@ -25,8 +25,22 @@ blacklistFile = "/app/config/blacklist.json"
 
 
 [docker]
+# Enable Docker registry proxy (v2 API support)
+# Supports: Docker Hub, GitHub Container Registry, Quay.io, etc.
 enabled = true
+
+# Require authentication for Docker proxy (optional)
+# Set to true if you want to protect the Docker proxy with credentials
 auth = false
+
+# Token caching and timeout settings (configured internally)
+# - Automatic token caching with expiration support
+# - 5-second timeout for Docker Hub (network-unreachable resilience)
+# - 10-second timeout for other registries
+# - Fallback to unauthenticated access for public images
+# - Useful for mainland China networks where auth.docker.io is unreachable
+
+# Optional authentication credentials (only used if auth = true)
 [docker.auther]
 user = ""
 pass = ""

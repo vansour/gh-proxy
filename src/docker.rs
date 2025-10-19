@@ -1,4 +1,6 @@
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
     body::Body,
@@ -8,10 +10,89 @@ use axum::{
 use http_body_util::BodyExt;
 use hyper::header;
 use hyper::http::uri::{Authority, PathAndQuery};
+use tokio::sync::RwLock;
 use tracing::{error, info, instrument, warn};
 
 use crate::config::DockerConfig;
 use crate::{AppState, ProxyError, ProxyKind, ProxyResult};
+
+/// Token cache entry with expiration time
+#[derive(Clone, Debug)]
+struct TokenCacheEntry {
+    token: String,
+    /// Token expiration time in seconds since UNIX_EPOCH
+    expires_at: u64,
+}
+
+impl TokenCacheEntry {
+    fn is_expired(&self) -> bool {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() >= self.expires_at)
+            .unwrap_or(true)
+    }
+
+    fn from_json(token_json: &serde_json::Value) -> Option<Self> {
+        let token = token_json.get("token")?.as_str()?.to_string();
+        let expires_in = token_json
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3600); // Default 1 hour if not specified
+
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() + expires_in)
+            .unwrap_or(0);
+
+        Some(TokenCacheEntry { token, expires_at })
+    }
+}
+
+/// Docker registry token cache
+pub struct RegistryTokenCache {
+    /// Cache key format: "registry:repo"
+    tokens: Arc<RwLock<std::collections::HashMap<String, TokenCacheEntry>>>,
+}
+
+impl RegistryTokenCache {
+    pub fn new() -> Self {
+        Self {
+            tokens: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Get cached token if it exists and is not expired
+    async fn get(&self, cache_key: &str) -> Option<String> {
+        let tokens = self.tokens.read().await;
+        if let Some(entry) = tokens.get(cache_key) {
+            if !entry.is_expired() {
+                info!("Token cache hit for: {}", cache_key);
+                return Some(entry.token.clone());
+            }
+        }
+        None
+    }
+
+    /// Store token in cache
+    async fn set(&self, cache_key: String, entry: TokenCacheEntry) {
+        let mut tokens = self.tokens.write().await;
+        tokens.insert(cache_key, entry);
+    }
+}
+
+impl Default for RegistryTokenCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for RegistryTokenCache {
+    fn clone(&self) -> Self {
+        Self {
+            tokens: Arc::clone(&self.tokens),
+        }
+    }
+}
 
 /// Docker v2 root handler for /v2 endpoint
 #[instrument(skip_all)]
@@ -203,7 +284,7 @@ fn normalize_docker_path(path: &str) -> String {
     }
 }
 
-/// Get anonymous token for registry authentication
+/// Get anonymous token for registry authentication with caching and timeout resilience
 async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Option<String> {
     // Parse the image name from path to get the scope
     let repo = if path.contains("manifests") || path.contains("blobs") {
@@ -220,17 +301,19 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
 
     let repo = repo?;
 
-    let (auth_url, service_name) = match registry {
+    let (auth_url, service_name, timeout_duration) = match registry {
         "registry-1.docker.io" => (
             format!(
                 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
                 repo
             ),
             "Docker Hub",
+            Duration::from_secs(5), // Shorter timeout for timeout-prone services
         ),
         "ghcr.io" => (
             format!("https://ghcr.io/token?scope=repository:{}:pull", repo),
             "GitHub Container Registry",
+            Duration::from_secs(10),
         ),
         "gcr.io" => {
             // GCR (Google Container Registry) - 公共镜像通常不需要认证
@@ -251,6 +334,7 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
                 repo
             ),
             "Quay.io",
+            Duration::from_secs(10),
         ),
         "nvcr.io" => {
             // NVIDIA Container Registry
@@ -261,6 +345,7 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
                     repo
                 ),
                 "NVIDIA Container Registry",
+                Duration::from_secs(10),
             )
         }
         "mcr.microsoft.com" => {
@@ -274,6 +359,13 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
         _ => return None,
     };
 
+    let cache_key = format!("{}:{}", registry, repo);
+
+    // Try to get from cache first
+    if let Some(cached_token) = state.docker_token_cache.get(&cache_key).await {
+        return Some(cached_token);
+    }
+
     info!(
         "Requesting {} anonymous token for repository: {}",
         service_name, repo
@@ -286,15 +378,30 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
         .body(Body::empty())
         .ok()?;
 
-    match state.client.request(token_req).await {
-        Ok(token_resp) => {
+    // Use timeout to prevent hanging on network-unreachable services
+    match tokio::time::timeout(timeout_duration, state.client.request(token_req)).await {
+        Ok(Ok(token_resp)) => {
             if token_resp.status().is_success() {
-                let body_bytes = token_resp.into_body().collect().await.ok()?.to_bytes();
-
-                if let Ok(token_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                    if let Some(token) = token_json.get("token").and_then(|t| t.as_str()) {
-                        info!("Successfully obtained {} anonymous token", service_name);
-                        return Some(token.to_string());
+                match token_resp.into_body().collect().await {
+                    Ok(collected_body) => {
+                        let body_bytes = collected_body.to_bytes();
+                        if let Ok(token_json) =
+                            serde_json::from_slice::<serde_json::Value>(&body_bytes)
+                        {
+                            if let Some(entry) = TokenCacheEntry::from_json(&token_json) {
+                                let token = entry.token.clone();
+                                // Store in cache
+                                state.docker_token_cache.set(cache_key, entry).await;
+                                info!(
+                                    "Successfully obtained {} anonymous token (cached)",
+                                    service_name
+                                );
+                                return Some(token);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to read {} token response body: {}", service_name, e);
                     }
                 }
             } else {
@@ -305,9 +412,29 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
                 );
             }
         }
-        Err(e) => {
-            warn!("Failed to get {} token: {}", service_name, e);
+        Ok(Err(e)) => {
+            warn!(
+                "Failed to get {} token (will retry with fallback): {}",
+                service_name, e
+            );
         }
+        Err(_) => {
+            warn!(
+                "{} token request timed out after {:?} (network unreachable or too slow)",
+                service_name, timeout_duration
+            );
+        }
+    }
+
+    // Fallback: For public images, allow unauthenticated access when token service is unreachable
+    if registry == "registry-1.docker.io" {
+        info!(
+            "Token request failed for Docker Hub, attempting unauthenticated access for public image: {}",
+            repo
+        );
+        // Return None to attempt unauthenticated access
+        // The registry will return 401 if authentication is actually required
+        return None;
     }
 
     None

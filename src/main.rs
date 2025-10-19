@@ -31,6 +31,8 @@ pub struct AppState {
     pub client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
     /// Lazily loaded blacklist cache
     pub blacklist_cache: Arc<OnceCell<Vec<String>>>,
+    /// Docker registry token cache for offline/timeout resilience
+    pub docker_token_cache: docker::RegistryTokenCache,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -169,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
         github_config: Arc::new(github_config),
         client,
         blacklist_cache: Arc::new(OnceCell::new()),
+        docker_token_cache: docker::RegistryTokenCache::new(),
     };
 
     let fallback_state = app_state.clone();

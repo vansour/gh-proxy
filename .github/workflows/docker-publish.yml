@@ -37,16 +37,3 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      
-      - name: Display image information
-        run: |
-          echo "✅ Image successfully pushed to Docker Hub"
-          echo "📦 Image name: ${{ env.IMAGE_NAME }}:${{ env.TAG }}"
-          echo "🔗 Access URL: https://hub.docker.com/r/${{ env.IMAGE_NAME }}"
-          echo ""
-          echo "🏗️ Supported platforms:"
-          echo "  - linux/amd64"
-          echo "  - linux/arm64"
-          echo ""
-          echo "Use the following command to pull the image:"
-          echo "docker pull ${{ env.IMAGE_NAME }}:${{ env.TAG }}"
