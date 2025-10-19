@@ -8,7 +8,9 @@ use axum::{
     Router,
 };
 use config::{AuthConfig, GitHubConfig, ServerConfig, Settings};
-use hyper::header;
+use futures_util::StreamExt;
+use http_body_util::BodyExt;
+use hyper::{body::Incoming, header};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
@@ -126,6 +128,91 @@ pub enum ProxyKind {
     Docker,
 }
 
+#[derive(Clone)]
+pub enum ResponsePostProcessor {
+    ShellEditor { proxy_url: Arc<str> },
+}
+
+struct RequestLifecycle {
+    metrics_guard: metrics::RequestMetrics,
+    metrics: metrics::MetricsCollector,
+    shutdown: shutdown::ShutdownManager,
+    completed: bool,
+}
+
+impl RequestLifecycle {
+    fn new(state: &AppState, proxy_kind: ProxyKind) -> Self {
+        state.shutdown_manager.request_started();
+
+        match proxy_kind {
+            ProxyKind::GitHub => state.metrics.record_github_request(),
+            ProxyKind::Docker => state.metrics.record_docker_request(),
+        }
+
+        let metrics_guard = state.metrics.record_request_start();
+
+        Self {
+            metrics_guard,
+            metrics: state.metrics.clone(),
+            shutdown: state.shutdown_manager.clone(),
+            completed: false,
+        }
+    }
+
+    fn success(&mut self, bytes_sent: u64) {
+        if self.completed {
+            return;
+        }
+
+        self.metrics_guard.success(bytes_sent);
+        self.shutdown.request_completed();
+        self.completed = true;
+    }
+
+    fn fail(&mut self, error: Option<&ProxyError>) {
+        if self.completed {
+            return;
+        }
+
+        if let Some(err) = error {
+            match err {
+                ProxyError::AccessDenied(_) => {
+                    self.metrics.record_access_denied_error();
+                }
+                ProxyError::SizeExceeded(_, _) => {
+                    self.metrics.record_size_exceeded_error();
+                }
+                ProxyError::InvalidTarget(_)
+                | ProxyError::InvalidGitHubUrl(_)
+                | ProxyError::GitHubRepoHomepage(_) => {
+                    self.metrics.record_proxy_error();
+                }
+                ProxyError::Http(_)
+                | ProxyError::ProcessingError(_)
+                | ProxyError::UnsupportedHost(_)
+                | ProxyError::HttpBuilder(_) => {
+                    self.metrics.record_proxy_error();
+                }
+            }
+        } else {
+            self.metrics.record_proxy_error();
+        }
+
+        self.metrics_guard.error();
+        self.shutdown.request_completed();
+        self.completed = true;
+    }
+}
+
+impl Drop for RequestLifecycle {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.metrics_guard.error();
+            self.shutdown.request_completed();
+        }
+    }
+}
+
 /// Convert ProxyError to HTTP Response
 fn error_response(error: ProxyError) -> Response<Body> {
     let status = error.to_status_code();
@@ -164,10 +251,6 @@ async fn main() -> anyhow::Result<()> {
     if settings.shell.is_editor_enabled() {
         info!("Shell editor mode enabled");
     }
-    info!(
-        "Connection pool: max_idle={}, idle_timeout={}s",
-        settings.server.max_idle_connections, settings.server.pool_idle_timeout
-    );
     info!("CORS: Enabled (allowing all origins)");
 
     let bind_addr: SocketAddr = settings.server.bind_addr().parse()?;
@@ -257,12 +340,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn build_client(
-    server: &ServerConfig,
+    _server: &ServerConfig,
 ) -> Client<hyper_rustls::HttpsConnector<HttpConnector>, Body> {
     let mut http_connector = HttpConnector::new();
 
-    // Configure connection pool with optimized settings
-    http_connector.set_keepalive(Some(server.pool_idle_timeout()));
     // Enable TCP_NODELAY to reduce latency for small packets
     http_connector.set_nodelay(true);
     // Set connection timeout to 30 seconds
@@ -279,13 +360,8 @@ fn build_client(
         .enable_http2()
         .wrap_connector(http_connector);
 
-    // Build client with optimized pool settings
+    // Build client with default settings
     Client::builder(TokioExecutor::new())
-        // Pool idle timeout: connections stay alive for this duration
-        .pool_idle_timeout(server.pool_idle_timeout())
-        // Max idle connections per host: prevents connection exhaustion
-        .pool_max_idle_per_host(server.max_idle_connections)
-        // Enable connection reuse across requests
         .http2_only(false) // Support both HTTP/1.1 and HTTP/2
         .build(connector)
 }
@@ -530,43 +606,40 @@ fn resolve_target_uri_with_validation(uri: &Uri) -> ProxyResult<Uri> {
     Ok(target_uri)
 }
 
-/// Handle shell script and HTML response processing if enabled
-///
-/// This function processes text responses to inject proxy URLs when shell editor
-/// mode is enabled. It works with already-buffered responses.
-async fn handle_shell_script(
-    state: &AppState,
-    response: Response<Body>,
-    target_uri: &Uri,
-    proxy_url: &str,
-) -> ProxyResult<Response<Body>> {
-    let is_shell = is_shell_script(target_uri);
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("")
-        .to_lowercase();
-    let is_html = content_type.contains("text/html") || content_type.contains("application/xhtml");
+fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
+    let path = uri.path();
 
-    if !state.settings.shell.editor {
-        return Ok(response);
-    }
+    // Remove leading slash
+    let path = path.trim_start_matches('/');
 
-    // Process shell scripts or HTML responses to inject proxy URLs
-    if is_shell {
-        info!("Processing shell script response for proxy URL injection");
-        process_shell_script_response(response, proxy_url)
-            .await
-            .map_err(|e| ProxyError::ProcessingError(e))
-    } else if is_html {
-        info!("Processing HTML response for proxy URL injection");
-        process_html_response(response, proxy_url)
-            .await
-            .map_err(|e| ProxyError::ProcessingError(e))
+    // Fix common URL malformation: https:/ -> https://
+    let path = if path.starts_with("https:/") && !path.starts_with("https://") {
+        format!("https://{}", &path[7..])
+    } else if path.starts_with("http:/") && !path.starts_with("http://") {
+        format!("http://{}", &path[6..])
     } else {
-        Ok(response)
+        path.to_string()
+    };
+
+    if path.starts_with("http://") || path.starts_with("https://") {
+        let converted = github::convert_github_blob_to_raw(&path);
+        return converted.parse().map_err(|e| format!("Invalid URL: {}", e));
     }
+
+    if path.starts_with("github.com/") || path.starts_with("raw.githubusercontent.com/") {
+        let full_url = format!("https://{}", path);
+        let converted = github::convert_github_blob_to_raw(&full_url);
+        return converted
+            .parse()
+            .map_err(|e| format!("Invalid GitHub URL: {}", e));
+    }
+
+    Err(format!("No valid target found for path: {}", path))
+}
+
+fn is_shell_script(uri: &Uri) -> bool {
+    let path = uri.path();
+    path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh")
 }
 
 #[instrument(skip_all)]
@@ -577,11 +650,10 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
     info!("Fallback proxy request: {} {}", method, path);
 
     // Ignore browser requests for favicon and other common static assets
-    if path == "/favicon.ico"
-        || path == "/robots.txt"
-        || path == "/apple-touch-icon.png"
-        || path == "/.well-known/security.txt"
-    {
+    if matches!(
+        path,
+        "/favicon.ico" | "/robots.txt" | "/apple-touch-icon.png" | "/.well-known/security.txt"
+    ) {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
@@ -603,11 +675,9 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
         .get("x-forwarded-proto")
         .and_then(|h| h.to_str().ok())
     {
-        // Use X-Forwarded-Proto if available (set by reverse proxy)
         debug!("Using X-Forwarded-Proto: {}", forwarded);
         forwarded.to_string()
     } else if let Some(scheme) = req.uri().scheme_str() {
-        // Use scheme from URI if available
         debug!("Using URI scheme: {}", scheme);
         scheme.to_string()
     } else if proxy_host.starts_with("localhost")
@@ -617,17 +687,14 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
         || proxy_host.ends_with(":3000")
         || proxy_host.ends_with(":5000")
     {
-        // Local/dev connections or common HTTP ports use http by default
         debug!("Using http for local/dev host: {}", proxy_host);
         "http".to_string()
     } else {
-        // Remote connections use https by default
         debug!("Using https for remote connection ({})", proxy_host);
         "https".to_string()
     };
 
     let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
-
     info!("Proxy URL determined: {}", proxy_url);
 
     let client_ip = extract_client_ip(&req);
@@ -640,8 +707,7 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
     // Resolve target URI
     let target_uri = match resolve_target_uri_with_validation(req.uri()) {
         Ok(uri) => uri,
-        Err(_error) => {
-            // For invalid paths that aren't valid GitHub/HTTP URLs, return 404 with debug info
+        Err(_) => {
             warn!("Path is not a valid proxy target (404 Not Found): {}", path);
             return Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -654,144 +720,31 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
         }
     };
 
-    // Proxy request
-    let response = match proxy_request(&state, req, target_uri.clone(), ProxyKind::GitHub).await {
+    state.metrics.record_fallback_request();
+
+    let post_processor = if state.settings.shell.editor {
+        Some(ResponsePostProcessor::ShellEditor {
+            proxy_url: Arc::from(proxy_url.clone()),
+        })
+    } else {
+        None
+    };
+
+    let response = match proxy_request(
+        &state,
+        req,
+        target_uri.clone(),
+        ProxyKind::GitHub,
+        post_processor,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(error) => return error_response(error),
     };
 
     info!("Fallback proxy success: status={}", response.status());
-
-    // Handle shell script processing
-    match handle_shell_script(&state, response, &target_uri, &proxy_url).await {
-        Ok(processed_response) => {
-            if state.settings.shell.editor && is_shell_script(&target_uri) {
-                info!("Shell script processed with proxy prefixes");
-            }
-            processed_response
-        }
-        Err(error) => error_response(error),
-    }
-}
-
-fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
-    let path = uri.path();
-
-    // Remove leading slash
-    let path = path.trim_start_matches('/');
-
-    // Fix common URL malformation: https:/ -> https://
-    // This handles cases where a single slash is missing in the URL
-    let path = if path.starts_with("https:/") && !path.starts_with("https://") {
-        format!("https://{}", &path[7..])
-    } else if path.starts_with("http:/") && !path.starts_with("http://") {
-        format!("http://{}", &path[6..])
-    } else {
-        path.to_string()
-    };
-
-    // Check if it's a full URL (http:// or https://)
-    if path.starts_with("http://") || path.starts_with("https://") {
-        // Convert GitHub blob URLs to raw URLs
-        let converted = github::convert_github_blob_to_raw(&path);
-        return converted.parse().map_err(|e| format!("Invalid URL: {}", e));
-    }
-
-    // Check if it's a GitHub URL pattern
-    if path.starts_with("github.com/") || path.starts_with("raw.githubusercontent.com/") {
-        let full_url = format!("https://{}", path);
-        // Convert GitHub blob URLs to raw URLs
-        let converted = github::convert_github_blob_to_raw(&full_url);
-        return converted
-            .parse()
-            .map_err(|e| format!("Invalid GitHub URL: {}", e));
-    }
-
-    // Return error with path for logging purposes
-    // This will be converted to 404 in the fallback handler
-    Err(format!("No valid target found for path: {}", path))
-}
-
-fn is_shell_script(uri: &Uri) -> bool {
-    let path = uri.path();
-    path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh")
-}
-
-async fn process_shell_script_response(
-    response: Response<Body>,
-    proxy_url: &str,
-) -> Result<Response<Body>, String> {
-    use http_body_util::BodyExt;
-
-    // Get the response status and headers
-    let (parts, body) = response.into_parts();
-
-    // Read the body
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| format!("Failed to read response body: {}", e))?
-        .to_bytes();
-
-    // Try to convert to string using UTF-8, with fallback strategies
-    let content = match String::from_utf8(body_bytes.to_vec()) {
-        Ok(text) => {
-            info!(
-                "Processing shell script ({} bytes), adding proxy prefix: {}",
-                text.len(),
-                proxy_url
-            );
-            // Replace GitHub URLs with proxied versions
-            let result = add_proxy_to_github_urls(&text, proxy_url);
-            info!("Result: {} bytes", result.len());
-            result
-        }
-        Err(_utf8_err) => {
-            // Try to fix common UTF-8 issues
-            let mut fixed_bytes = body_bytes.to_vec();
-
-            // Try to recover from invalid UTF-8 by replacing invalid sequences
-            // This is less aggressive than from_utf8_lossy
-            loop {
-                match String::from_utf8(fixed_bytes.clone()) {
-                    Ok(text) => {
-                        debug!("Recovered from UTF-8 error with byte fixing");
-                        let result = add_proxy_to_github_urls(&text, proxy_url);
-                        break result;
-                    }
-                    Err(e) => {
-                        // Get the position of the invalid byte
-                        let invalid_pos = e.utf8_error().valid_up_to();
-                        if invalid_pos >= fixed_bytes.len() {
-                            // Can't fix further, use lossy conversion
-                            debug!(
-                                "Cannot fix UTF-8 at position {}, using lossy conversion",
-                                invalid_pos
-                            );
-                            let lossy_text = String::from_utf8_lossy(&body_bytes).to_string();
-                            let result = add_proxy_to_github_urls(&lossy_text, proxy_url);
-                            break result;
-                        }
-                        // Try to skip or replace the invalid byte
-                        fixed_bytes[invalid_pos] = b'?';
-                    }
-                }
-            }
-        }
-    };
-
-    // Build the response with the modified content
-    // Must update Content-Length header since we modified the content
-    let mut response = Response::from_parts(parts, Body::from(content.clone()));
-
-    // Update Content-Length to match the new body size
-    response.headers_mut().insert(
-        hyper::header::CONTENT_LENGTH,
-        hyper::header::HeaderValue::from_str(&content.len().to_string())
-            .unwrap_or(hyper::header::HeaderValue::from_static("0")),
-    );
-
-    Ok(response)
+    response
 }
 
 fn add_proxy_to_github_urls(content: &str, proxy_url: &str) -> String {
@@ -846,57 +799,6 @@ fn add_proxy_to_github_urls(content: &str, proxy_url: &str) -> String {
     result
 }
 
-async fn process_html_response(
-    response: Response<Body>,
-    proxy_url: &str,
-) -> Result<Response<Body>, String> {
-    use http_body_util::BodyExt;
-
-    // Get the response status and headers
-    let (parts, body) = response.into_parts();
-
-    // Read the body
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| format!("Failed to read response body: {}", e))?
-        .to_bytes();
-
-    // Try to convert to string, if it fails, return the original bytes
-    let content = match String::from_utf8(body_bytes.to_vec()) {
-        Ok(text) => {
-            info!(
-                "Processing HTML response ({} bytes), injecting proxy URLs with URL: {}",
-                text.len(),
-                proxy_url
-            );
-            let result = add_proxy_to_html_urls(&text, proxy_url);
-            info!("Result: {} bytes", result.len());
-            result
-        }
-        Err(e) => {
-            warn!(
-                "HTML response contains non-UTF-8 data, skipping processing: {}",
-                e
-            );
-            return Ok(Response::from_parts(parts, Body::from(body_bytes)));
-        }
-    };
-
-    // Build the response with the modified content
-    // Must update Content-Length header since we modified the content
-    let mut response = Response::from_parts(parts, Body::from(content.clone()));
-
-    // Update Content-Length to match the new body size
-    response.headers_mut().insert(
-        hyper::header::CONTENT_LENGTH,
-        hyper::header::HeaderValue::from_str(&content.len().to_string())
-            .unwrap_or(hyper::header::HeaderValue::from_static("0")),
-    );
-
-    Ok(response)
-}
-
 fn add_proxy_to_html_urls(content: &str, proxy_url: &str) -> String {
     use regex::Regex;
 
@@ -944,14 +846,19 @@ pub async fn proxy_request(
     mut req: Request<Body>,
     target_uri: Uri,
     proxy_kind: ProxyKind,
+    processor: Option<ResponsePostProcessor>,
 ) -> ProxyResult<Response<Body>> {
+    let mut lifecycle = RequestLifecycle::new(state, proxy_kind);
     let start = std::time::Instant::now();
+    let size_limit_mb = state.settings.server.size_limit;
+    let size_limit_bytes = size_limit_mb * 1024 * 1024;
 
     // Update request URI
     *req.uri_mut() = target_uri.clone();
 
     // Sanitize and modify headers
-    sanitize_request_headers(req.headers_mut());
+    let disable_compression = state.settings.shell.editor && processor.is_some();
+    sanitize_request_headers(req.headers_mut(), disable_compression);
 
     match proxy_kind {
         ProxyKind::GitHub => {
@@ -965,10 +872,15 @@ pub async fn proxy_request(
     info!("Sending request to: {}", target_uri);
 
     // Send request using the shared client (connection pooling)
-    let response = state.client.request(req).await.map_err(|e| {
-        error!("Failed to connect to {}: {}", target_uri, e);
-        ProxyError::Http(Box::new(e))
-    })?;
+    let response = match state.client.request(req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Failed to connect to {}: {}", target_uri, e);
+            let error = ProxyError::Http(Box::new(e));
+            lifecycle.fail(Some(&error));
+            return Err(error);
+        }
+    };
 
     let status = response.status();
     let headers = response.headers().clone();
@@ -987,19 +899,17 @@ pub async fn proxy_request(
         status, content_length, elapsed
     );
 
-    // Check response size limit BEFORE processing
+    // Check response size limit BEFORE processing when length is known
     if let Some(length) = content_length {
-        let limit_bytes = state.settings.server.size_limit * 1024 * 1024;
-        if length > limit_bytes {
+        if length > size_limit_bytes {
             let size_mb = length / 1024 / 1024;
             warn!(
                 "Response size {} bytes ({} MB) exceeds limit {} MB",
                 length, size_mb, state.settings.server.size_limit
             );
-            return Err(ProxyError::SizeExceeded(
-                size_mb,
-                state.settings.server.size_limit,
-            ));
+            let error = ProxyError::SizeExceeded(size_mb, state.settings.server.size_limit);
+            lifecycle.fail(Some(&error));
+            return Err(error);
         }
     }
 
@@ -1037,18 +947,26 @@ pub async fn proxy_request(
                             );
                             let (mut parts, body) = blob_response.into_parts();
 
-                            // Read body with size limit check
-                            use http_body_util::BodyExt;
-                            let body_bytes = body
-                                .collect()
-                                .await
-                                .map_err(|e| ProxyError::Http(Box::new(e)))?
-                                .to_bytes();
+                            let body_bytes =
+                                match collect_body_with_limit(body, size_limit_mb).await {
+                                    Ok(bytes) => bytes,
+                                    Err(err) => {
+                                        lifecycle.fail(Some(&err));
+                                        return Err(err);
+                                    }
+                                };
 
-                            // Sanitize response headers
-                            sanitize_response_headers(&mut parts.headers);
+                            sanitize_response_headers(&mut parts.headers, true, false, false);
+                            let content_length_value =
+                                HeaderValue::from_str(&body_bytes.len().to_string())
+                                    .unwrap_or_else(|_| HeaderValue::from_static("0"));
+                            parts
+                                .headers
+                                .insert(hyper::header::CONTENT_LENGTH, content_length_value);
 
+                            let bytes_sent = body_bytes.len() as u64;
                             let response = Response::from_parts(parts, Body::from(body_bytes));
+                            lifecycle.success(bytes_sent);
                             return Ok(response);
                         }
                         Err(e) => {
@@ -1061,57 +979,102 @@ pub async fn proxy_request(
         }
     }
 
-    // Determine if response needs text processing (shell script injection, HTML modification)
+    let shell_processing_enabled = state.settings.shell.editor && processor.is_some();
     let needs_text_processing =
-        is_response_needs_text_processing(&content_type, &target_uri, state.settings.shell.editor);
+        is_response_needs_text_processing(&content_type, &target_uri, shell_processing_enabled);
 
     // Get response body
     let (mut parts, body) = response.into_parts();
 
-    // Handle response body based on content type and requirements
-    let processed_body = if needs_text_processing {
-        // For text responses that need processing, we must buffer the content
-        use http_body_util::BodyExt;
+    if needs_text_processing {
+        let proxy_url = match processor_proxy_url(&processor) {
+            Some(url) => url,
+            None => {
+                let error = ProxyError::ProcessingError(
+                    "Shell editor processing requested but no proxy URL provided".to_string(),
+                );
+                lifecycle.fail(Some(&error));
+                return Err(error);
+            }
+        };
 
-        let body_bytes = body
-            .collect()
-            .await
-            .map_err(|e| ProxyError::Http(Box::new(e)))?
-            .to_bytes();
+        let body_bytes = match collect_body_with_limit(body, size_limit_mb).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                lifecycle.fail(Some(&err));
+                return Err(err);
+            }
+        };
 
-        debug!(
-            "Text processing required: {} bytes for {}",
-            body_bytes.len(),
-            target_uri.path()
-        );
+        let processed_bytes;
+        let mut loosen_headers = false;
 
-        Body::from(body_bytes)
-    } else {
-        // For binary or unmodified text, stream directly (zero-copy)
-        debug!(
-            "Binary streaming mode for {}. Content-Type: {}",
-            target_uri.path(),
-            content_type.as_deref().unwrap_or("unknown")
-        );
+        if is_shell_script(&target_uri) {
+            match process_shell_script_bytes(body_bytes.clone(), proxy_url) {
+                Ok(bytes) => {
+                    processed_bytes = bytes;
+                    loosen_headers = true;
+                }
+                Err(e) => {
+                    let error = ProxyError::ProcessingError(e);
+                    lifecycle.fail(Some(&error));
+                    return Err(error);
+                }
+            }
+        } else if is_html_like(&content_type, &target_uri) {
+            match process_html_bytes(body_bytes.clone(), proxy_url) {
+                Ok(bytes) => {
+                    loosen_headers = bytes != body_bytes;
+                    processed_bytes = bytes;
+                }
+                Err(e) => {
+                    let error = ProxyError::ProcessingError(e);
+                    lifecycle.fail(Some(&error));
+                    return Err(error);
+                }
+            }
+        } else {
+            processed_bytes = body_bytes;
+        }
 
-        // In a true streaming scenario, we'd return the body directly
-        // For now, we still collect to maintain compatibility with existing code
-        // This can be further optimized by using streaming bodies
-        use http_body_util::BodyExt;
+        sanitize_response_headers(&mut parts.headers, true, true, loosen_headers);
+        let content_length_value = HeaderValue::from_str(&processed_bytes.len().to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("0"));
+        parts
+            .headers
+            .insert(hyper::header::CONTENT_LENGTH, content_length_value);
 
-        let body_bytes = body
-            .collect()
-            .await
-            .map_err(|e| ProxyError::Http(Box::new(e)))?
-            .to_bytes();
+        let bytes_sent = processed_bytes.len() as u64;
+        let response = Response::from_parts(parts, Body::from(processed_bytes));
+        lifecycle.success(bytes_sent);
+        return Ok(response);
+    }
 
-        Body::from(body_bytes)
+    if let Some(length) = content_length {
+        sanitize_response_headers(&mut parts.headers, false, false, false);
+        let response = Response::from_parts(parts, Body::from_stream(body.into_data_stream()));
+        lifecycle.success(length);
+        return Ok(response);
+    }
+
+    let body_bytes = match collect_body_with_limit(body, size_limit_mb).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            lifecycle.fail(Some(&err));
+            return Err(err);
+        }
     };
 
-    // Sanitize response headers
-    sanitize_response_headers(&mut parts.headers);
+    sanitize_response_headers(&mut parts.headers, true, false, false);
+    let content_length_value = HeaderValue::from_str(&body_bytes.len().to_string())
+        .unwrap_or_else(|_| HeaderValue::from_static("0"));
+    parts
+        .headers
+        .insert(hyper::header::CONTENT_LENGTH, content_length_value);
 
-    let response = Response::from_parts(parts, processed_body);
+    let bytes_sent = body_bytes.len() as u64;
+    let response = Response::from_parts(parts, Body::from(body_bytes));
+    lifecycle.success(bytes_sent);
     Ok(response)
 }
 
@@ -1155,32 +1118,41 @@ fn is_response_needs_text_processing(
     false
 }
 
-fn sanitize_response_headers(headers: &mut HeaderMap) {
-    // Remove Content-Security-Policy headers that block script execution
-    headers.remove("content-security-policy");
-    headers.remove("content-security-policy-report-only");
+fn sanitize_response_headers(
+    headers: &mut HeaderMap,
+    body_replaced: bool,
+    strip_encoding: bool,
+    loosen_security: bool,
+) {
+    if body_replaced {
+        headers.remove(header::TRANSFER_ENCODING);
+        headers.remove(header::CONTENT_LENGTH);
+        headers.remove("connection");
+        headers.remove("keep-alive");
+    }
 
-    // Remove X-Frame-Options to allow embedding
-    headers.remove("x-frame-options");
+    if strip_encoding {
+        headers.remove(header::CONTENT_ENCODING);
+    }
 
-    // Remove other restrictive headers
-    headers.remove("x-content-type-options");
+    if loosen_security {
+        // Remove Content-Security-Policy headers that block script execution
+        headers.remove("content-security-policy");
+        headers.remove("content-security-policy-report-only");
 
-    // Remove encoding headers since we've already decompressed the content
-    // This prevents the browser from trying to decompress already-decompressed content
-    headers.remove("content-encoding");
-    headers.remove("transfer-encoding");
+        // Remove X-Frame-Options to allow embedding
+        headers.remove("x-frame-options");
 
-    // Remove cache-related headers to prevent stale content issues
-    headers.remove("cache-control");
-    headers.remove("pragma");
-
-    // Remove ETag and Last-Modified to prevent 304 Not Modified responses
-    headers.remove("etag");
-    headers.remove("last-modified");
+        // Remove other restrictive headers that interfere with inline assets
+        headers.remove("x-content-type-options");
+        headers.remove("cache-control");
+        headers.remove("pragma");
+        headers.remove("etag");
+        headers.remove("last-modified");
+    }
 }
 
-fn sanitize_request_headers(headers: &mut HeaderMap) {
+fn sanitize_request_headers(headers: &mut HeaderMap, disable_compression: bool) {
     // Remove hop-by-hop headers
     headers.remove(header::CONNECTION);
     headers.remove(header::PROXY_AUTHENTICATE);
@@ -1191,9 +1163,118 @@ fn sanitize_request_headers(headers: &mut HeaderMap) {
     headers.remove(header::UPGRADE);
     headers.remove("keep-alive");
 
-    // Remove Accept-Encoding to get uncompressed responses
-    // This way we don't have to deal with decompression
-    headers.remove(header::ACCEPT_ENCODING);
+    if disable_compression {
+        headers.remove(header::ACCEPT_ENCODING);
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+    }
+}
+
+fn processor_proxy_url(processor: &Option<ResponsePostProcessor>) -> Option<&str> {
+    match processor {
+        Some(ResponsePostProcessor::ShellEditor { proxy_url }) => Some(proxy_url.as_ref()),
+        None => None,
+    }
+}
+
+fn is_html_like(content_type: &Option<String>, target_uri: &Uri) -> bool {
+    if let Some(ct) = content_type {
+        let lowered = ct.to_lowercase();
+        if lowered.contains("text/html") || lowered.contains("application/xhtml") {
+            return true;
+        }
+    }
+
+    let path = target_uri.path().to_lowercase();
+    path.ends_with(".html") || path.ends_with(".htm")
+}
+
+async fn collect_body_with_limit(body: Incoming, size_limit_mb: u64) -> ProxyResult<Vec<u8>> {
+    let limit_bytes = size_limit_mb.saturating_mul(1024 * 1024);
+    let mut total: u64 = 0;
+    let mut data = Vec::new();
+    let mut stream = body.into_data_stream();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| {
+            error!("Failed to read response body: {}", e);
+            ProxyError::Http(Box::new(e))
+        })?;
+
+        total = total.saturating_add(chunk.len() as u64);
+        if total > limit_bytes {
+            let size_mb = std::cmp::max(1, total / 1024 / 1024);
+            warn!(
+                "Streaming body exceeded limit: {} bytes ({} MB) > {} MB",
+                total, size_mb, size_limit_mb
+            );
+            return Err(ProxyError::SizeExceeded(size_mb, size_limit_mb));
+        }
+
+        data.extend_from_slice(&chunk);
+    }
+
+    Ok(data)
+}
+
+fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, String> {
+    match String::from_utf8(body_bytes.clone()) {
+        Ok(text) => {
+            info!(
+                "Processing shell script ({} bytes), adding proxy prefix: {}",
+                text.len(),
+                proxy_url
+            );
+            Ok(add_proxy_to_github_urls(&text, proxy_url).into_bytes())
+        }
+        Err(_) => {
+            let mut fixed_bytes = body_bytes;
+
+            loop {
+                match String::from_utf8(fixed_bytes.clone()) {
+                    Ok(text) => {
+                        debug!("Recovered from UTF-8 error with byte fixing");
+                        return Ok(add_proxy_to_github_urls(&text, proxy_url).into_bytes());
+                    }
+                    Err(e) => {
+                        let invalid_pos = e.utf8_error().valid_up_to();
+                        if invalid_pos >= fixed_bytes.len() {
+                            let lossy_text = String::from_utf8_lossy(&fixed_bytes);
+                            warn!(
+                                "Cannot fully recover shell script UTF-8, using lossy conversion"
+                            );
+                            return Ok(
+                                add_proxy_to_github_urls(&lossy_text, proxy_url).into_bytes()
+                            );
+                        }
+                        fixed_bytes[invalid_pos] = b'?';
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, String> {
+    match String::from_utf8(body_bytes.clone()) {
+        Ok(text) => {
+            info!(
+                "Processing HTML response ({} bytes), injecting proxy URLs with URL: {}",
+                text.len(),
+                proxy_url
+            );
+            Ok(add_proxy_to_html_urls(&text, proxy_url).into_bytes())
+        }
+        Err(e) => {
+            warn!(
+                "HTML response contains non-UTF-8 data, skipping processing: {}",
+                e
+            );
+            Ok(body_bytes)
+        }
+    }
 }
 
 fn apply_github_headers(headers: &mut HeaderMap, auth: &AuthConfig) {

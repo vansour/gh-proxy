@@ -198,7 +198,15 @@ impl UptimeTracker {
 
     /// Get uptime in seconds
     pub fn uptime_secs(&self) -> u64 {
-        self.start_time.elapsed().as_secs()
+        let elapsed = self.start_time.elapsed();
+        let secs = elapsed.as_secs();
+        if secs > 0 {
+            secs
+        } else if elapsed.subsec_nanos() > 0 {
+            1
+        } else {
+            0
+        }
     }
 }
 

@@ -23,7 +23,7 @@ pub async fn github_proxy(
     match resolve_github_target(&state, &path) {
         Ok(target_uri) => {
             info!("Resolved GitHub target: {}", target_uri);
-            match crate::proxy_request(&state, req, target_uri, ProxyKind::GitHub).await {
+            match crate::proxy_request(&state, req, target_uri, ProxyKind::GitHub, None).await {
                 Ok(response) => {
                     info!("GitHub proxy success: status={}", response.status());
                     Ok(response)

@@ -1,4 +1,4 @@
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path};
 
 use serde::Deserialize;
 use serde_json;
@@ -62,15 +62,6 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(rename = "sizeLimit")]
     pub size_limit: u64, // MB
-    /// Maximum idle connections per host (default: 10)
-    #[serde(rename = "maxIdleConnections")]
-    pub max_idle_connections: usize,
-    /// Pool idle timeout in seconds (default: 90)
-    #[serde(rename = "poolIdleTimeout")]
-    pub pool_idle_timeout: u64,
-    /// Request timeout in seconds (default: 300)
-    #[serde(rename = "requestTimeout")]
-    pub request_timeout_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -79,9 +70,6 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             size_limit: 125,
-            max_idle_connections: 10,
-            pool_idle_timeout: 90,
-            request_timeout_secs: 300,
         }
     }
 }
@@ -91,34 +79,10 @@ impl ServerConfig {
         if self.host.is_empty() {
             self.host = "0.0.0.0".to_string();
         }
-
-        // Validate and adjust connection pool settings
-        if self.max_idle_connections == 0 {
-            self.max_idle_connections = 10;
-        }
-        if self.max_idle_connections > 1024 {
-            self.max_idle_connections = 1024; // Reasonable upper limit
-        }
-
-        if self.pool_idle_timeout == 0 {
-            self.pool_idle_timeout = 90;
-        }
-
-        if self.request_timeout_secs == 0 {
-            self.request_timeout_secs = 300;
-        }
     }
 
     pub fn bind_addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
-    }
-
-    pub fn request_timeout(&self) -> Duration {
-        Duration::from_secs(self.request_timeout_secs)
-    }
-
-    pub fn pool_idle_timeout(&self) -> Duration {
-        Duration::from_secs(self.pool_idle_timeout)
     }
 }
 

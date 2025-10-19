@@ -145,9 +145,13 @@ pub async fn handle_streaming_response(
 pub fn estimate_buffer_size(content_length: Option<u64>) -> usize {
     match content_length {
         Some(len) => {
-            // Use smaller of: 256KB or content_length / 4
-            // This prevents huge buffer allocations while being efficient
-            std::cmp::min(262144, (len as usize).max(4096) / 4)
+            // Enforce a 4KB floor for tiny payloads, otherwise scale by length/4
+            if len < 4096 {
+                4096
+            } else {
+                // Use smaller of: 256KB or content_length / 4 to limit allocations
+                std::cmp::min(262144, (len as usize) / 4)
+            }
         }
         None => 65536, // Default 64KB
     }

@@ -1,5 +1,5 @@
 // Metrics and tracing for observability
-// 
+//
 // This module provides:
 // - Prometheus metrics collection for RED monitoring (Rate/Errors/Duration)
 // - Request tracing with timing information
@@ -18,20 +18,20 @@ pub struct MetricsCollector {
     total_requests: Arc<AtomicU64>,
     successful_requests: Arc<AtomicU64>,
     failed_requests: Arc<AtomicU64>,
-    
+
     // Request size metrics (bytes)
     total_bytes_received: Arc<AtomicU64>,
     total_bytes_sent: Arc<AtomicU64>,
-    
+
     // Timing metrics
     total_request_duration_ms: Arc<AtomicU64>,
     max_request_duration_ms: Arc<AtomicU64>,
-    
+
     // Per-endpoint metrics
     github_requests: Arc<AtomicU64>,
     docker_requests: Arc<AtomicU64>,
     fallback_requests: Arc<AtomicU64>,
-    
+
     // Error counts by type
     proxy_errors: Arc<AtomicU64>,
     timeout_errors: Arc<AtomicU64>,
@@ -164,11 +164,7 @@ impl MetricsCollector {
         let size_err = self.size_exceeded_errors.load(Ordering::Relaxed);
         let access_err = self.access_denied_errors.load(Ordering::Relaxed);
 
-        let avg_duration = if total > 0 {
-            total_duration / total
-        } else {
-            0
-        };
+        let avg_duration = if total > 0 { total_duration / total } else { 0 };
 
         let error_rate = if total > 0 {
             (failed as f64 / total as f64) * 100.0
@@ -236,10 +232,21 @@ impl MetricsCollector {
             # HELP gh_proxy_access_denied_errors Access denied errors\n\
             # TYPE gh_proxy_access_denied_errors counter\n\
             gh_proxy_access_denied_errors {}\n",
-            total, successful, failed, avg_duration, max_duration,
-            bytes_received, bytes_sent, error_rate,
-            github, docker, fallback,
-            proxy_err, timeout_err, size_err, access_err
+            total,
+            successful,
+            failed,
+            avg_duration,
+            max_duration,
+            bytes_received,
+            bytes_sent,
+            error_rate,
+            github,
+            docker,
+            fallback,
+            proxy_err,
+            timeout_err,
+            size_err,
+            access_err
         )
     }
 
@@ -295,7 +302,8 @@ impl RequestMetrics {
     /// Record successful request completion
     pub fn success(&self, bytes_sent: u64) {
         let duration_ms = self.start_time.elapsed().as_millis() as u64;
-        self.collector.record_request_success(duration_ms, bytes_sent);
+        self.collector
+            .record_request_success(duration_ms, bytes_sent);
         debug!(
             "Request completed successfully: duration={}ms, bytes_sent={}",
             duration_ms, bytes_sent
@@ -329,10 +337,10 @@ mod tests {
     #[test]
     fn test_metrics_recording() {
         let metrics = MetricsCollector::new();
-        
+
         metrics.record_request_start();
         assert_eq!(metrics.total_requests.load(Ordering::Relaxed), 1);
-        
+
         metrics.record_request_success(100, 1024);
         assert_eq!(metrics.successful_requests.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.total_bytes_sent.load(Ordering::Relaxed), 1024);
@@ -341,11 +349,11 @@ mod tests {
     #[test]
     fn test_metrics_error_tracking() {
         let metrics = MetricsCollector::new();
-        
+
         metrics.record_proxy_error();
         metrics.record_timeout_error();
         metrics.record_access_denied_error();
-        
+
         assert_eq!(metrics.proxy_errors.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.timeout_errors.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.access_denied_errors.load(Ordering::Relaxed), 1);
@@ -356,7 +364,7 @@ mod tests {
         let metrics = MetricsCollector::new();
         metrics.total_requests.store(100, Ordering::Relaxed);
         metrics.successful_requests.store(95, Ordering::Relaxed);
-        
+
         let prometheus = metrics.as_prometheus_metrics();
         assert!(prometheus.contains("gh_proxy_requests_total 100"));
         assert!(prometheus.contains("gh_proxy_requests_successful 95"));

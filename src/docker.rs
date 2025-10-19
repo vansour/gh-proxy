@@ -7,6 +7,7 @@ use axum::{
     extract::{Path, Request, State},
     http::{HeaderMap, Response, StatusCode, Uri},
 };
+use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use hyper::header;
 use hyper::http::uri::{Authority, PathAndQuery};
@@ -15,6 +16,8 @@ use tracing::{error, info, instrument, warn};
 
 use crate::config::DockerConfig;
 use crate::{AppState, ProxyError, ProxyKind, ProxyResult};
+
+const TOKEN_RESPONSE_LIMIT: usize = 16 * 1024; // 16KB max token payload
 
 /// Token cache entry with expiration time
 #[derive(Clone, Debug)]
@@ -119,7 +122,7 @@ pub async fn docker_v2_root(
     let target_uri = Uri::from_static("https://registry-1.docker.io/v2/");
     info!("Proxying v2 root to: {}", target_uri);
 
-    match crate::proxy_request(&state, req, target_uri.clone(), ProxyKind::Docker).await {
+    match crate::proxy_request(&state, req, target_uri.clone(), ProxyKind::Docker, None).await {
         Ok(response) => {
             // Handle 401 Unauthorized response
             if response.status() == StatusCode::UNAUTHORIZED {
@@ -143,8 +146,14 @@ pub async fn docker_v2_root(
                         format!("Bearer {}", token).parse().unwrap(),
                     );
 
-                    match crate::proxy_request(&state, retry_req, target_uri, ProxyKind::Docker)
-                        .await
+                    match crate::proxy_request(
+                        &state,
+                        retry_req,
+                        target_uri,
+                        ProxyKind::Docker,
+                        None,
+                    )
+                    .await
                     {
                         Ok(retry_response) => {
                             info!(
@@ -248,7 +257,7 @@ pub async fn docker_v2_proxy(
     let target_uri_str = target_uri.to_string();
     info!("Proxying to registry: {}", target_uri_str);
 
-    match crate::proxy_request(&state, req, target_uri.clone(), ProxyKind::Docker).await {
+    match crate::proxy_request(&state, req, target_uri.clone(), ProxyKind::Docker, None).await {
         Ok(response) => {
             // Handle 401 Unauthorized response with retry
             if response.status() == StatusCode::UNAUTHORIZED {
@@ -271,8 +280,14 @@ pub async fn docker_v2_proxy(
                         format!("Bearer {}", token).parse().unwrap(),
                     );
 
-                    match crate::proxy_request(&state, retry_req, target_uri, ProxyKind::Docker)
-                        .await
+                    match crate::proxy_request(
+                        &state,
+                        retry_req,
+                        target_uri,
+                        ProxyKind::Docker,
+                        None,
+                    )
+                    .await
                     {
                         Ok(retry_response) => {
                             info!(
@@ -330,7 +345,7 @@ pub async fn docker_proxy(
     match resolve_docker_target(&state, &path) {
         Ok(target_uri) => {
             info!("Resolved Docker target: {}", target_uri);
-            match crate::proxy_request(&state, req, target_uri, ProxyKind::Docker).await {
+            match crate::proxy_request(&state, req, target_uri, ProxyKind::Docker, None).await {
                 Ok(response) => {
                     info!("Docker proxy success: status={}", response.status());
                     Ok(response)
@@ -469,34 +484,65 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
     // Use timeout to prevent hanging on network-unreachable services
     match tokio::time::timeout(timeout_duration, state.client.request(token_req)).await {
         Ok(Ok(token_resp)) => {
-            if token_resp.status().is_success() {
-                match token_resp.into_body().collect().await {
-                    Ok(collected_body) => {
-                        let body_bytes = collected_body.to_bytes();
-                        if let Ok(token_json) =
-                            serde_json::from_slice::<serde_json::Value>(&body_bytes)
-                        {
-                            if let Some(entry) = TokenCacheEntry::from_json(&token_json) {
-                                let token = entry.token.clone();
-                                // Store in cache
-                                state.docker_token_cache.set(cache_key, entry).await;
-                                info!(
-                                    "Successfully obtained {} anonymous token (cached)",
-                                    service_name
+            let status = token_resp.status();
+            if status.is_success() {
+                let mut body_bytes = Vec::new();
+                let mut total = 0usize;
+                let mut stream = token_resp.into_body().into_data_stream();
+
+                while let Some(chunk_result) = stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            total += chunk.len();
+                            if total > TOKEN_RESPONSE_LIMIT {
+                                warn!(
+                                    "{} token response exceeded {} bytes, discarding",
+                                    service_name, TOKEN_RESPONSE_LIMIT
                                 );
-                                return Some(token);
+                                return None;
                             }
+                            body_bytes.extend_from_slice(&chunk);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to stream {} token response body: {}",
+                                service_name, e
+                            );
+                            return None;
+                        }
+                    }
+                }
+
+                match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                    Ok(token_json) => {
+                        if let Some(entry) = TokenCacheEntry::from_json(&token_json) {
+                            let token = entry.token.clone();
+                            state.docker_token_cache.set(cache_key, entry).await;
+                            info!(
+                                "Successfully obtained {} anonymous token (cached)",
+                                service_name
+                            );
+                            return Some(token);
+                        } else {
+                            warn!(
+                                "{} token response missing expected fields: {}",
+                                service_name, token_json
+                            );
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to read {} token response body: {}", service_name, e);
+                        warn!(
+                            "{} token response is not valid JSON ({} bytes): {}",
+                            service_name,
+                            body_bytes.len(),
+                            e
+                        );
                     }
                 }
             } else {
                 warn!(
                     "{} token request failed with status: {}",
-                    service_name,
-                    token_resp.status()
+                    service_name, status
                 );
             }
         }
@@ -504,9 +550,10 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
             warn!("Failed to get {} token: {}", service_name, e);
         }
         Err(_) => {
+            state.metrics.record_timeout_error();
             warn!(
-                "{} token request timed out after {:?} (network unreachable or too slow)",
-                service_name, timeout_duration
+                "{} token request timed out after {:?} (auth service: {})",
+                service_name, timeout_duration, auth_url
             );
         }
     }
