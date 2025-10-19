@@ -119,9 +119,43 @@ pub async fn docker_v2_root(
     let target_uri = Uri::from_static("https://registry-1.docker.io/v2/");
     info!("Proxying v2 root to: {}", target_uri);
 
-    match crate::proxy_request(&state, req, target_uri, ProxyKind::Docker).await {
+    match crate::proxy_request(&state, req, target_uri.clone(), ProxyKind::Docker).await {
         Ok(response) => {
-            info!("Docker v2 root success: status={}", response.status());
+            // Handle 401 Unauthorized response
+            if response.status() == StatusCode::UNAUTHORIZED {
+                info!("Received 401 from registry, attempting to get token for root v2 endpoint");
+                
+                // Try to get generic token
+                if let Some(token) = get_generic_registry_token(&state, "registry-1.docker.io").await {
+                    info!("Successfully obtained token, retrying request");
+                    
+                    // Rebuild request with token
+                    let mut retry_req = Request::builder()
+                        .method("GET")
+                        .uri(target_uri.clone())
+                        .body(Body::empty())
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    
+                    retry_req.headers_mut().insert(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", token).parse().unwrap(),
+                    );
+                    
+                    match crate::proxy_request(&state, retry_req, target_uri, ProxyKind::Docker).await {
+                        Ok(retry_response) => {
+                            info!("Docker v2 root retry success: status={}", retry_response.status());
+                            return Ok(retry_response);
+                        }
+                        Err(err) => {
+                            error!("Docker v2 root retry failure: {}", err);
+                        }
+                    }
+                } else {
+                    warn!("Failed to obtain token for root endpoint");
+                }
+            }
+            
+            info!("Docker v2 root response: status={}", response.status());
             Ok(response)
         }
         Err(err) => {
@@ -207,9 +241,42 @@ pub async fn docker_v2_proxy(
     let target_uri_str = target_uri.to_string();
     info!("Proxying to registry: {}", target_uri_str);
 
-    match crate::proxy_request(&state, req, target_uri, ProxyKind::Docker).await {
+    match crate::proxy_request(&state, req, target_uri.clone(), ProxyKind::Docker).await {
         Ok(response) => {
-            info!("Docker v2 proxy success: status={}", response.status());
+            // Handle 401 Unauthorized response with retry
+            if response.status() == StatusCode::UNAUTHORIZED {
+                info!("Received 401 from registry, attempting to get token");
+                
+                if let Some(token) = get_registry_token(&state, &target_registry, &normalized_path).await {
+                    info!("Successfully obtained token, retrying request");
+                    
+                    // Rebuild request with token
+                    let mut retry_req = Request::builder()
+                        .method("GET")
+                        .uri(target_uri.clone())
+                        .body(Body::empty())
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    
+                    retry_req.headers_mut().insert(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", token).parse().unwrap(),
+                    );
+                    
+                    match crate::proxy_request(&state, retry_req, target_uri, ProxyKind::Docker).await {
+                        Ok(retry_response) => {
+                            info!("Docker v2 proxy retry success: status={}", retry_response.status());
+                            return Ok(retry_response);
+                        }
+                        Err(err) => {
+                            error!("Docker v2 proxy retry failure: {}", err);
+                        }
+                    }
+                } else {
+                    warn!("Failed to obtain token for retry");
+                }
+            }
+            
+            info!("Docker v2 proxy response: status={}", response.status());
             Ok(response)
         }
         Err(err) => {
@@ -282,6 +349,13 @@ fn normalize_docker_path(path: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+/// Get a generic token for a registry (when repo is not known)
+/// Used for root v2 endpoint checks
+async fn get_generic_registry_token(state: &AppState, registry: &str) -> Option<String> {
+    // Use a generic public image for token retrieval
+    get_registry_token(state, registry, "library/alpine/manifests/latest").await
 }
 
 /// Get anonymous token for registry authentication with caching and timeout resilience
@@ -414,7 +488,7 @@ async fn get_registry_token(state: &AppState, registry: &str, path: &str) -> Opt
         }
         Ok(Err(e)) => {
             warn!(
-                "Failed to get {} token (will retry with fallback): {}",
+                "Failed to get {} token: {}",
                 service_name, e
             );
         }
