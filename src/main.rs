@@ -192,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(health))
         .route("/style.css", get(serve_static_file))
         .route("/app.js", get(serve_static_file))
-        .route("/gh-proxy.png", get(serve_static_file))
+        .route("/favicon.ico", get(serve_favicon))
         .route("/api/config", get(api::get_config))
         .route("/v2", any(docker::docker_v2_root))
         .route("/v2/", any(docker::docker_v2_root))
@@ -310,7 +310,6 @@ async fn serve_static_file(uri: axum::http::Uri) -> Response<Body> {
     let content_type = match path {
         "style.css" => "text/css; charset=utf-8",
         "app.js" => "application/javascript; charset=utf-8",
-        "gh-proxy.png" => "image/png",
         _ => "text/plain; charset=utf-8",
     };
 
@@ -325,6 +324,29 @@ async fn serve_static_file(uri: axum::http::Uri) -> Response<Body> {
             .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
             .body(Body::from("File not found"))
             .unwrap(),
+    }
+}
+
+async fn serve_favicon() -> Response<Body> {
+    let file_path = "/app/web/favicon.ico";
+
+    match std::fs::read(file_path) {
+        Ok(content) => {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(hyper::header::CONTENT_TYPE, "image/x-icon")
+                .header("Cache-Control", "public, max-age=31536000") // Cache for 1 year
+                .body(Body::from(content))
+                .unwrap()
+        }
+        Err(_) => {
+            // Return a minimal 1x1 transparent ICO if file not found
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(hyper::header::CONTENT_TYPE, "image/x-icon")
+                .body(Body::empty())
+                .unwrap()
+        }
     }
 }
 
@@ -439,6 +461,17 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
 
     info!("Fallback proxy request: {} {}", method, path);
 
+    // Ignore browser requests for favicon and other common static assets
+    if path == "/favicon.ico" 
+        || path == "/robots.txt" 
+        || path == "/apple-touch-icon.png"
+        || path == "/.well-known/security.txt" {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    }
+
     // Get the Host header for proxy URL generation
     let proxy_host = req
         .headers()
@@ -550,11 +583,11 @@ async fn process_shell_script_response(
         .map_err(|e| format!("Failed to read response body: {}", e))?
         .to_bytes();
 
-    // Try to convert to string, if it fails, return the original bytes
+    // Try to convert to string using UTF-8, if it fails, try lossy conversion
     let content = match String::from_utf8(body_bytes.to_vec()) {
         Ok(text) => {
             info!(
-                "Processing shell script ({}  bytes), adding proxy prefix: {}",
+                "Processing shell script ({} bytes), adding proxy prefix: {}",
                 text.len(),
                 proxy_host
             );
@@ -563,18 +596,35 @@ async fn process_shell_script_response(
             info!("Result: {} bytes", result.len());
             result
         }
-        Err(e) => {
-            warn!(
-                "Shell script contains non-UTF-8 data, skipping processing: {}",
-                e
-            );
-            // Return the original bytes as-is
-            return Ok(Response::from_parts(parts, Body::from(body_bytes)));
+        Err(utf8_err) => {
+            // Try lossy conversion for invalid UTF-8
+            let lossy_text = String::from_utf8_lossy(&body_bytes).to_string();
+            
+            // Check if there's meaningful text content
+            if lossy_text.chars().filter(|c| c.is_ascii() && *c != '\u{FFFD}').count() 
+                > lossy_text.len() / 2 {
+                // More than 50% valid ASCII/UTF-8, try to process it
+                warn!(
+                    "Shell script contains non-UTF-8 data, attempting lossy processing: {}",
+                    utf8_err
+                );
+                let result = add_proxy_to_github_urls(&lossy_text, proxy_host);
+                info!("Lossy processing result: {} bytes", result.len());
+                result
+            } else {
+                // Too much binary data, return original
+                warn!(
+                    "Shell script contains too much non-UTF-8 data ({}), skipping processing: {}",
+                    utf8_err, utf8_err
+                );
+                // Return the original bytes as-is
+                return Ok(Response::from_parts(parts, Body::from(body_bytes)));
+            }
         }
     };
 
     // Build the response with the modified content
-    // Must update Content-Length header since we modified the content
+    // Must update Content-Length header since we might have modified the content
     let mut response = Response::from_parts(parts, Body::from(content.clone()));
 
     // Update Content-Length to match the new body size
