@@ -340,40 +340,18 @@ impl BlacklistConfig {
 #[serde(default)]
 pub struct DockerConfig {
     pub enabled: bool,
-    pub auth: bool,
-    #[serde(default)]
-    pub auther: DockerAuther,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct DockerAuther {
-    #[serde(default)]
-    pub user: String,
-    #[serde(default)]
-    pub pass: String,
 }
 
 impl Default for DockerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            auth: false,
-            auther: DockerAuther::default(),
         }
     }
 }
 
 impl DockerConfig {
     fn finalize(&mut self) -> Result<(), ConfigError> {
-        // Validate auth configuration
-        if self.auth {
-            if self.auther.user.is_empty() || self.auther.pass.is_empty() {
-                return Err(ConfigError::Validation(
-                    "docker.auth is enabled but docker.auther.user or docker.auther.pass is empty"
-                        .into(),
-                ));
-            }
-        }
         Ok(())
     }
 
@@ -399,12 +377,7 @@ impl DockerConfig {
         allowed.iter().any(|&h| h == registry)
     }
 
-    pub fn verify_auth(&self, username: &str, password: &str) -> bool {
-        if !self.auth {
-            return true; // Auth disabled, allow all
-        }
-        username == self.auther.user && password == self.auther.pass
-    }
+
 }
 
 // GitHub-related helper structures

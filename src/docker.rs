@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::{
     body::Body,
     extract::{Path, Request, State},
-    http::{HeaderMap, Response, StatusCode, Uri},
+    http::{Response, StatusCode, Uri},
 };
 use futures_util::StreamExt;
 use http_body_util::BodyExt;
@@ -14,7 +14,6 @@ use hyper::http::uri::{Authority, PathAndQuery};
 use tokio::sync::RwLock;
 use tracing::{error, info, instrument, warn};
 
-use crate::config::DockerConfig;
 use crate::{AppState, ProxyError, ProxyKind, ProxyResult};
 
 const TOKEN_RESPONSE_LIMIT: usize = 16 * 1024; // 16KB max token payload
@@ -110,14 +109,6 @@ pub async fn docker_v2_root(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Check authentication if required
-    if state.settings.docker.auth {
-        if !verify_docker_auth(req.headers(), &state.settings.docker) {
-            warn!("Docker authentication failed for v2 root");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    }
-
     // Forward to registry-1.docker.io/v2/
     let target_uri = Uri::from_static("https://registry-1.docker.io/v2/");
     info!("Proxying v2 root to: {}", target_uri);
@@ -193,14 +184,6 @@ pub async fn docker_v2_proxy(
     if !state.settings.docker.enabled {
         warn!("Docker proxy is disabled in configuration");
         return Err(StatusCode::FORBIDDEN);
-    }
-
-    // Check authentication if required (for proxy auth, not Docker Hub auth)
-    if state.settings.docker.auth {
-        if !verify_docker_auth(req.headers(), &state.settings.docker) {
-            warn!("Docker authentication failed for v2 path: {}", path);
-            return Err(StatusCode::UNAUTHORIZED);
-        }
     }
 
     // Detect if the path starts with a registry domain (e.g., ghcr.io, gcr.io, etc.)
@@ -335,11 +318,6 @@ pub async fn docker_proxy(
     if !state.settings.docker.enabled {
         warn!("Docker proxy is disabled");
         return Err(StatusCode::FORBIDDEN);
-    }
-
-    if state.settings.docker.auth && !verify_docker_auth(req.headers(), &state.settings.docker) {
-        warn!("Docker authentication failed");
-        return Err(StatusCode::UNAUTHORIZED);
     }
 
     match resolve_docker_target(&state, &path) {
@@ -619,30 +597,6 @@ pub fn resolve_docker_target(state: &AppState, path: &str) -> ProxyResult<Uri> {
         .path_and_query(path_and_query)
         .build()
         .map_err(|e| ProxyError::InvalidTarget(format!("Failed to build URI: {}", e)))
-}
-
-/// Verify Docker authentication
-pub fn verify_docker_auth(headers: &HeaderMap, docker_config: &DockerConfig) -> bool {
-    if !docker_config.auth {
-        return true;
-    }
-
-    if let Some(auth_header) = headers.get(header::AUTHORIZATION) {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if let Some(credentials) = auth_str.strip_prefix("Basic ") {
-                use base64::Engine;
-                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(credentials) {
-                    if let Ok(creds_str) = String::from_utf8(decoded) {
-                        if let Some((username, password)) = creds_str.split_once(':') {
-                            return docker_config.verify_auth(username, password);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    false
 }
 
 #[cfg(test)]

@@ -20,7 +20,3 @@ blacklistFile = "/app/config/blacklist.json"
 
 [docker]
 enabled = true
-auth = false
-[docker.auther]
-user = ""
-pass = ""
