@@ -111,7 +111,7 @@ impl ProxyError {
 
 pub type ProxyResult<T> = Result<T, ProxyError>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProxyKind {
     GitHub,
     Docker,
@@ -425,7 +425,7 @@ async fn handle_shell_script(
     state: &AppState,
     response: Response<Body>,
     target_uri: &Uri,
-    proxy_host: &str,
+    proxy_url: &str,
 ) -> ProxyResult<Response<Body>> {
     let is_shell = is_shell_script(target_uri);
     let content_type = response
@@ -442,11 +442,11 @@ async fn handle_shell_script(
 
     // Process shell scripts or HTML responses to inject proxy URLs
     if is_shell {
-        process_shell_script_response(response, proxy_host)
+        process_shell_script_response(response, proxy_url)
             .await
             .map_err(|e| ProxyError::ProcessingError(e))
     } else if is_html {
-        process_html_response(response, proxy_host)
+        process_html_response(response, proxy_url)
             .await
             .map_err(|e| ProxyError::ProcessingError(e))
     } else {
@@ -462,10 +462,11 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
     info!("Fallback proxy request: {} {}", method, path);
 
     // Ignore browser requests for favicon and other common static assets
-    if path == "/favicon.ico" 
-        || path == "/robots.txt" 
+    if path == "/favicon.ico"
+        || path == "/robots.txt"
         || path == "/apple-touch-icon.png"
-        || path == "/.well-known/security.txt" {
+        || path == "/.well-known/security.txt"
+    {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
@@ -479,6 +480,35 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
         .and_then(|h| h.to_str().ok())
         .unwrap_or("localhost:8080")
         .to_string();
+
+    // Determine the protocol based on the request
+    // Priority: X-Forwarded-Proto > URI scheme > heuristics > default
+    let proxy_scheme = if let Some(forwarded) = req.headers().get("x-forwarded-proto").and_then(|h| h.to_str().ok()) {
+        // Use X-Forwarded-Proto if available (set by reverse proxy)
+        debug!("Using X-Forwarded-Proto: {}", forwarded);
+        forwarded.to_string()
+    } else if let Some(scheme) = req.uri().scheme_str() {
+        // Use scheme from URI if available
+        debug!("Using URI scheme: {}", scheme);
+        scheme.to_string()
+    } else if proxy_host.starts_with("localhost") 
+        || proxy_host.contains("127.0.0.1")
+        || proxy_host.ends_with(":80")
+        || proxy_host.ends_with(":8080")
+        || proxy_host.ends_with(":3000")
+        || proxy_host.ends_with(":5000") {
+        // Local/dev connections or common HTTP ports use http by default
+        debug!("Using http for local/dev host: {}", proxy_host);
+        "http".to_string()
+    } else {
+        // Remote connections use https by default
+        debug!("Using https for remote connection ({})", proxy_host);
+        "https".to_string()
+    };
+
+    let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
+
+    info!("Proxy URL determined: {}", proxy_url);
 
     let client_ip = extract_client_ip(&req);
 
@@ -513,7 +543,7 @@ async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
     info!("Fallback proxy success: status={}", response.status());
 
     // Handle shell script processing
-    match handle_shell_script(&state, response, &target_uri, &proxy_host).await {
+    match handle_shell_script(&state, response, &target_uri, &proxy_url).await {
         Ok(processed_response) => {
             if state.settings.shell.editor && is_shell_script(&target_uri) {
                 info!("Shell script processed with proxy prefixes");
@@ -569,7 +599,7 @@ fn is_shell_script(uri: &Uri) -> bool {
 
 async fn process_shell_script_response(
     response: Response<Body>,
-    proxy_host: &str,
+    proxy_url: &str,
 ) -> Result<Response<Body>, String> {
     use http_body_util::BodyExt;
 
@@ -583,48 +613,52 @@ async fn process_shell_script_response(
         .map_err(|e| format!("Failed to read response body: {}", e))?
         .to_bytes();
 
-    // Try to convert to string using UTF-8, if it fails, try lossy conversion
+    // Try to convert to string using UTF-8, with fallback strategies
     let content = match String::from_utf8(body_bytes.to_vec()) {
         Ok(text) => {
             info!(
                 "Processing shell script ({} bytes), adding proxy prefix: {}",
                 text.len(),
-                proxy_host
+                proxy_url
             );
             // Replace GitHub URLs with proxied versions
-            let result = add_proxy_to_github_urls(&text, proxy_host);
+            let result = add_proxy_to_github_urls(&text, proxy_url);
             info!("Result: {} bytes", result.len());
             result
         }
-        Err(utf8_err) => {
-            // Try lossy conversion for invalid UTF-8
-            let lossy_text = String::from_utf8_lossy(&body_bytes).to_string();
+        Err(_utf8_err) => {
+            // Try to fix common UTF-8 issues
+            let mut fixed_bytes = body_bytes.to_vec();
             
-            // Check if there's meaningful text content
-            if lossy_text.chars().filter(|c| c.is_ascii() && *c != '\u{FFFD}').count() 
-                > lossy_text.len() / 2 {
-                // More than 50% valid ASCII/UTF-8, try to process it
-                warn!(
-                    "Shell script contains non-UTF-8 data, attempting lossy processing: {}",
-                    utf8_err
-                );
-                let result = add_proxy_to_github_urls(&lossy_text, proxy_host);
-                info!("Lossy processing result: {} bytes", result.len());
-                result
-            } else {
-                // Too much binary data, return original
-                warn!(
-                    "Shell script contains too much non-UTF-8 data ({}), skipping processing: {}",
-                    utf8_err, utf8_err
-                );
-                // Return the original bytes as-is
-                return Ok(Response::from_parts(parts, Body::from(body_bytes)));
+            // Try to recover from invalid UTF-8 by replacing invalid sequences
+            // This is less aggressive than from_utf8_lossy
+            loop {
+                match String::from_utf8(fixed_bytes.clone()) {
+                    Ok(text) => {
+                        debug!("Recovered from UTF-8 error with byte fixing");
+                        let result = add_proxy_to_github_urls(&text, proxy_url);
+                        break result;
+                    }
+                    Err(e) => {
+                        // Get the position of the invalid byte
+                        let invalid_pos = e.utf8_error().valid_up_to();
+                        if invalid_pos >= fixed_bytes.len() {
+                            // Can't fix further, use lossy conversion
+                            debug!("Cannot fix UTF-8 at position {}, using lossy conversion", invalid_pos);
+                            let lossy_text = String::from_utf8_lossy(&body_bytes).to_string();
+                            let result = add_proxy_to_github_urls(&lossy_text, proxy_url);
+                            break result;
+                        }
+                        // Try to skip or replace the invalid byte
+                        fixed_bytes[invalid_pos] = b'?';
+                    }
+                }
             }
         }
     };
 
     // Build the response with the modified content
-    // Must update Content-Length header since we might have modified the content
+    // Must update Content-Length header since we modified the content
     let mut response = Response::from_parts(parts, Body::from(content.clone()));
 
     // Update Content-Length to match the new body size
@@ -637,80 +671,61 @@ async fn process_shell_script_response(
     Ok(response)
 }
 
-fn add_proxy_to_github_urls(content: &str, proxy_host: &str) -> String {
+fn add_proxy_to_github_urls(content: &str, proxy_url: &str) -> String {
     use regex::Regex;
 
-    // Determine the protocol based on proxy_host or default to https
-    let proxy_url = if proxy_host.starts_with("http://") || proxy_host.starts_with("https://") {
-        proxy_host.to_string()
-    } else if proxy_host.starts_with("localhost") || proxy_host.contains("127.0.0.1") {
-        format!("http://{}", proxy_host)
+    // proxy_url should already have the protocol (e.g., "https://example.com" or "http://example.com")
+    // If not, add https as default
+    let proxy_url = if proxy_url.starts_with("http://") || proxy_url.starts_with("https://") {
+        proxy_url.to_string()
     } else {
-        format!("https://{}", proxy_host)
+        format!("https://{}", proxy_url)
     };
 
-    // Pattern 1: raw.githubusercontent.com URLs
-    let raw_pattern = Regex::new(r"(https?://raw\.githubusercontent\.com/[^\s]+)").unwrap();
+    // Pattern 1: raw.githubusercontent.com URLs - match everything up to whitespace, quote, angle bracket
+    // Use character class to exclude problematic characters
+    let raw_pattern = Regex::new(r#"https?://raw\.githubusercontent\.com/[^\s"'<>]++"#).unwrap();
 
-    // Pattern 2: github.com raw/blob/releases URLs
-    let github_pattern =
-        Regex::new(r"(https?://github\.com/[^/\s]+/[^/\s]+/(?:raw|blob|releases)/[^\s]+)").unwrap();
+    // Pattern 2: github.com URLs (various formats)
+    let github_pattern = Regex::new(r#"https?://github\.com/[^\s"'<>]++"#).unwrap();
 
-    // Process line-by-line but preserve all original line endings
-    let mut result = String::with_capacity(content.len() + 1024);
+    // Replace all matching URLs
+    let mut result = content.to_string();
 
-    for line in content.lines() {
-        let mut processed_line = line.to_string();
+    // Replace raw.githubusercontent.com URLs
+    result = raw_pattern
+        .replace_all(&result, |caps: &regex::Captures| {
+            let url = &caps[0];
+            if url.contains(&proxy_url) || url.contains("localhost") || url.contains("127.0.0.1") {
+                // Already proxied
+                url.to_string()
+            } else {
+                // Wrap with proxy URL
+                format!("{}/{}", proxy_url, url)
+            }
+        })
+        .to_string();
 
-        // Only process lines that look like download commands or variable assignments
-        // Skip lines inside echo statements or other string contexts
-        let should_process = line.trim_start().starts_with("wget ")
-            || line.trim_start().starts_with("curl ")
-            || (line.contains("=") && (line.contains("http://") || line.contains("https://")))
-            || line.trim_start().starts_with("URL=")
-            || line.trim_start().starts_with("url=");
-
-        if should_process {
-            // Replace raw.githubusercontent.com URLs
-            processed_line = raw_pattern
-                .replace_all(&processed_line, |caps: &regex::Captures| {
-                    let url = &caps[1];
-                    if url.contains(proxy_host) {
-                        url.to_string()
-                    } else {
-                        format!("{}/{}", proxy_url, url)
-                    }
-                })
-                .to_string();
-
-            // Replace github.com URLs
-            processed_line = github_pattern
-                .replace_all(&processed_line, |caps: &regex::Captures| {
-                    let url = &caps[1];
-                    if url.contains(proxy_host) {
-                        url.to_string()
-                    } else {
-                        format!("{}/{}", proxy_url, url)
-                    }
-                })
-                .to_string();
-        }
-
-        result.push_str(&processed_line);
-        result.push('\n');
-    }
-
-    // Remove the trailing newline if the original didn't have one
-    if !content.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
+    // Replace github.com URLs
+    result = github_pattern
+        .replace_all(&result, |caps: &regex::Captures| {
+            let url = &caps[0];
+            if url.contains(&proxy_url) || url.contains("localhost") || url.contains("127.0.0.1") {
+                // Already proxied
+                url.to_string()
+            } else {
+                // Wrap with proxy URL
+                format!("{}/{}", proxy_url, url)
+            }
+        })
+        .to_string();
 
     result
 }
 
 async fn process_html_response(
     response: Response<Body>,
-    proxy_host: &str,
+    proxy_url: &str,
 ) -> Result<Response<Body>, String> {
     use http_body_util::BodyExt;
 
@@ -728,11 +743,11 @@ async fn process_html_response(
     let content = match String::from_utf8(body_bytes.to_vec()) {
         Ok(text) => {
             info!(
-                "Processing HTML response ({} bytes), injecting proxy URLs with host: {}",
+                "Processing HTML response ({} bytes), injecting proxy URLs with URL: {}",
                 text.len(),
-                proxy_host
+                proxy_url
             );
-            let result = add_proxy_to_html_urls(&text, proxy_host);
+            let result = add_proxy_to_html_urls(&text, proxy_url);
             info!("Result: {} bytes", result.len());
             result
         }
@@ -759,16 +774,15 @@ async fn process_html_response(
     Ok(response)
 }
 
-fn add_proxy_to_html_urls(content: &str, proxy_host: &str) -> String {
+fn add_proxy_to_html_urls(content: &str, proxy_url: &str) -> String {
     use regex::Regex;
 
-    // Determine the protocol based on proxy_host or default to https
-    let proxy_url = if proxy_host.starts_with("http://") || proxy_host.starts_with("https://") {
-        proxy_host.to_string()
-    } else if proxy_host.starts_with("localhost") || proxy_host.contains("127.0.0.1") {
-        format!("http://{}", proxy_host)
+    // proxy_url should already have the protocol (e.g., "https://example.com" or "http://example.com")
+    // If not, add https as default
+    let proxy_url = if proxy_url.starts_with("http://") || proxy_url.starts_with("https://") {
+        proxy_url.to_string()
     } else {
-        format!("https://{}", proxy_host)
+        format!("https://{}", proxy_url)
     };
 
     // Pattern for GitHub URLs in HTML (in href, src, data attributes, etc.)
@@ -782,7 +796,7 @@ fn add_proxy_to_html_urls(content: &str, proxy_host: &str) -> String {
     result = github_url_pattern
         .replace_all(&result, |caps: &regex::Captures| {
             let url = &caps[1];
-            if url.contains(proxy_host) {
+            if url.contains(&proxy_url) || url.contains("localhost") || url.contains("127.0.0.1") {
                 // Already proxied, don't double-proxy
                 url.to_string()
             } else {
@@ -835,6 +849,61 @@ pub async fn proxy_request(
 
     info!("Response: status={}, elapsed={:?}", status, elapsed);
 
+    // Handle redirects for Docker blobs - fetch the redirect target directly
+    // This prevents the Docker client from having to make the second request to CDN
+    if matches!(
+        status,
+        StatusCode::MOVED_PERMANENTLY
+            | StatusCode::FOUND
+            | StatusCode::TEMPORARY_REDIRECT
+            | StatusCode::PERMANENT_REDIRECT
+    ) && proxy_kind == ProxyKind::Docker
+        && target_uri.path().contains("/blobs/")
+    {
+        if let Some(location) = headers.get(header::LOCATION) {
+            if let Ok(location_str) = location.to_str() {
+                info!("Docker blob redirect detected: {}", location_str);
+
+                // Parse the redirect location
+                if let Ok(redirect_uri) = location_str.parse::<Uri>() {
+                    // Fetch from the redirect location
+                    let redirect_req = Request::builder()
+                        .method("GET")
+                        .uri(redirect_uri.clone())
+                        .body(Body::empty())
+                        .map_err(|e| ProxyError::HttpBuilder(e))?;
+
+                    info!("Following blob redirect to: {}", redirect_uri);
+
+                    match state.client.request(redirect_req).await {
+                        Ok(blob_response) => {
+                            info!(
+                                "Successfully fetched blob from redirect: status={}",
+                                blob_response.status()
+                            );
+                            let (mut parts, body) = blob_response.into_parts();
+                            let body_bytes = body
+                                .collect()
+                                .await
+                                .map_err(|e| ProxyError::Http(Box::new(e)))?
+                                .to_bytes();
+
+                            // Sanitize response headers
+                            sanitize_response_headers(&mut parts.headers);
+
+                            let response = Response::from_parts(parts, Body::from(body_bytes));
+                            return Ok(response);
+                        }
+                        Err(e) => {
+                            warn!("Failed to fetch blob from redirect: {}", e);
+                            // Fall through to return the redirect response
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Check response size limit
     if let Some(content_length) = headers.get(header::CONTENT_LENGTH) {
         if let Ok(length_str) = content_length.to_str() {
@@ -880,6 +949,19 @@ fn sanitize_response_headers(headers: &mut HeaderMap) {
 
     // Remove other restrictive headers
     headers.remove("x-content-type-options");
+    
+    // Remove encoding headers since we've already decompressed the content
+    // This prevents the browser from trying to decompress already-decompressed content
+    headers.remove("content-encoding");
+    headers.remove("transfer-encoding");
+    
+    // Remove cache-related headers to prevent stale content issues
+    headers.remove("cache-control");
+    headers.remove("pragma");
+    
+    // Remove ETag and Last-Modified to prevent 304 Not Modified responses
+    headers.remove("etag");
+    headers.remove("last-modified");
 }
 
 fn sanitize_request_headers(headers: &mut HeaderMap) {
@@ -892,6 +974,10 @@ fn sanitize_request_headers(headers: &mut HeaderMap) {
     headers.remove(header::TRANSFER_ENCODING);
     headers.remove(header::UPGRADE);
     headers.remove("keep-alive");
+    
+    // Remove Accept-Encoding to get uncompressed responses
+    // This way we don't have to deal with decompression
+    headers.remove(header::ACCEPT_ENCODING);
 }
 
 fn apply_github_headers(headers: &mut HeaderMap, auth: &AuthConfig) {
