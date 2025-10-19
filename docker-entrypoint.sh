@@ -36,11 +36,17 @@ log_info "================================"
 log_info "GH-Proxy Docker Startup Script"
 log_info "================================"
 
-# Ensure logs directory exists
+# Ensure logs directory exists and is writable
 if [ ! -d "${LOGS_DIR}" ]; then
     log_info "Creating logs directory: ${LOGS_DIR}"
     mkdir -p "${LOGS_DIR}"
     log_debug "Logs directory created successfully"
+else
+    # Ensure the directory is writable by current user
+    if [ ! -w "${LOGS_DIR}" ]; then
+        log_warn "Logs directory exists but is not writable. Attempting to fix permissions..."
+        chmod 755 "${LOGS_DIR}" 2>/dev/null || log_warn "Could not modify logs directory permissions"
+    fi
 fi
 
 # Initialize config directory if empty
@@ -49,11 +55,18 @@ if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
     
     if [ -d "${CONFIG_DEFAULT_DIR}" ]; then
         log_info "Copying default configuration files from: ${CONFIG_DEFAULT_DIR}"
-        cp -r "${CONFIG_DEFAULT_DIR}"/* "${CONFIG_DIR}/" || log_warn "Failed to copy default config"
+        cp -r "${CONFIG_DEFAULT_DIR}"/* "${CONFIG_DIR}/" 2>/dev/null || log_warn "Failed to copy default config (check directory permissions)"
         log_debug "Configuration files copied successfully"
     else
         log_warn "Default config directory not found at ${CONFIG_DEFAULT_DIR}"
     fi
+fi
+
+# Verify config directory is readable
+if [ ! -r "${CONFIG_DIR}" ]; then
+    log_error "Configuration directory is not readable: ${CONFIG_DIR}"
+    log_error "Please ensure the directory has proper read permissions"
+    exit 1
 fi
 
 # Verify config.toml exists
