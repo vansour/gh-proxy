@@ -55,10 +55,35 @@ if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
     
     if [ -d "${CONFIG_DEFAULT_DIR}" ]; then
         log_info "Copying default configuration files from: ${CONFIG_DEFAULT_DIR}"
-        cp -r "${CONFIG_DEFAULT_DIR}"/* "${CONFIG_DIR}/" 2>/dev/null || log_warn "Failed to copy default config (check directory permissions)"
-        log_debug "Configuration files copied successfully"
+        if cp -r "${CONFIG_DEFAULT_DIR}"/* "${CONFIG_DIR}/" 2>/dev/null; then
+            log_debug "Configuration files copied successfully"
+        else
+            log_warn "Failed to copy default config files"
+            # Try creating a minimal config if copy fails
+            mkdir -p "${CONFIG_DIR}" 2>/dev/null
+            if [ ! -f "${CONFIG_DIR}/config.toml" ] && [ -f "${CONFIG_DEFAULT_DIR}/config.toml" ]; then
+                cp "${CONFIG_DEFAULT_DIR}/config.toml" "${CONFIG_DIR}/config.toml" 2>/dev/null
+                log_debug "Minimal config.toml copied"
+            fi
+        fi
     else
         log_warn "Default config directory not found at ${CONFIG_DEFAULT_DIR}"
+    fi
+fi
+
+# Ensure config directory exists and is writable
+if [ ! -d "${CONFIG_DIR}" ]; then
+    log_info "Creating config directory: ${CONFIG_DIR}"
+    mkdir -p "${CONFIG_DIR}" || {
+        log_error "Failed to create config directory"
+        exit 1
+    }
+    log_debug "Config directory created successfully"
+else
+    # Ensure the directory is writable by current user
+    if [ ! -w "${CONFIG_DIR}" ]; then
+        log_warn "Config directory is not writable. Attempting to fix permissions..."
+        chmod 755 "${CONFIG_DIR}" 2>/dev/null || log_warn "Could not modify config directory permissions"
     fi
 fi
 
@@ -72,7 +97,13 @@ fi
 # Verify config.toml exists
 if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
     log_error "Configuration file not found: ${CONFIG_DIR}/config.toml"
-    log_error "Please mount your config directory or ensure default config exists"
+    log_error ""
+    log_error "Solutions:"
+    log_error "1. Create config directory and copy default config:"
+    log_error "   mkdir -p ./config && cp ./config/* ./config/"
+    log_error ""
+    log_error "2. Or use compose with pre-initialized config directory"
+    log_error ""
     exit 1
 fi
 

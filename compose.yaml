@@ -6,12 +6,7 @@ services:
     image: gh-proxy:latest
     container_name: gh-proxy
     restart: unless-stopped
-    
-    # Port mapping - expose application port
     ports:
       - "8080:8080"
-    
-    # Volume mounts for configuration and logs
     volumes:
-      - ./config:/app/config:rw      # Configuration directory (read-write)
-      - ./logs:/app/logs:rw          # Logs directory (read-write)
+      - ./config:/app/config
