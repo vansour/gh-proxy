@@ -123,7 +123,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 初始化其他组件
         initializeTabs();
         updateDomainInExamples();
-        checkDockerHttpWarning();
     } catch (error) {
         console.error('初始化失败:', error);
         Utils.showToast('应用初始化失败，部分功能可能不可用', 'error');
@@ -194,13 +193,6 @@ function updateConfigUI() {
         sizeLimitEl.textContent = sizeLimit;
     }
     
-    // 更新 Docker 状态
-    const dockerEnabled = appConfig.docker?.enabled ? '✅ 已启用' : '❌ 未启用';
-    const dockerEnabledEl = document.getElementById('dockerEnabled');
-    if (dockerEnabledEl) {
-        dockerEnabledEl.textContent = dockerEnabled;
-    }
-    
     // 更新黑名单状态
     const blacklistEnabled = appConfig.blacklist?.enabled ? '✅ 已启用' : '❌ 未启用';
     const blacklistEnabledEl = document.getElementById('blacklistEnabled');
@@ -214,21 +206,11 @@ function updateConfigUI() {
     if (editorEnabledEl) {
         editorEnabledEl.textContent = editorEnabled;
     }
-    
-    // 如果 Docker 未启用，禁用 Docker 标签
-    if (!appConfig.docker?.enabled) {
-        const dockerTab = document.querySelector('[data-tab="docker"]');
-        if (dockerTab) {
-            dockerTab.style.opacity = '0.5';
-            dockerTab.style.cursor = 'not-allowed';
-            dockerTab.title = 'Docker 代理功能未启用';
-        }
-    }
 }
 
 // 设置默认配置
 function setDefaultConfig() {
-    const elements = ['sizeLimit', 'dockerEnabled', 'blacklistEnabled', 'editorEnabled'];
+    const elements = ['sizeLimit', 'blacklistEnabled', 'editorEnabled'];
     elements.forEach(id => {
         const el = document.getElementById(id);
         if (el) {
@@ -248,12 +230,6 @@ function initializeTabs() {
         if (!button) return;
         
         const tabName = button.getAttribute('data-tab');
-        
-        // 如果 Docker 未启用且点击的是 Docker 标签，阻止切换
-        if (tabName === 'docker' && appConfig && !appConfig.docker?.enabled) {
-            Utils.showToast('Docker 代理功能未启用', 'error');
-            return;
-        }
         
         // 移除所有活动状态
         tabsContainer.querySelectorAll('.tab-button').forEach(btn => {
@@ -474,61 +450,7 @@ function generateGithubUrl() {
     }
 }
 
-// 生成 Docker 加速命令
-function generateDockerUrl() {
-    const input = document.getElementById('dockerInput');
-    const resultBox = document.getElementById('dockerResult');
-    const resultText = document.getElementById('dockerResultText');
-    
-    const imageName = input.value.trim();
-    
-    if (!imageName) {
-        Utils.showToast('请输入 Docker 镜像名称', 'error');
-        return;
-    }
-    
-    // 检查是否使用 HTTP 访问
-    if (!isHttps) {
-        Utils.showToast('⚠️ Docker 代理需要 HTTPS 协议<br>当前使用 HTTP 访问，Docker 客户端不支持非 HTTPS 的镜像仓库<br>请使用 HTTPS 访问本站点', 'error');
-        return;
-    }
-    
-    // 检查 Docker 是否启用
-    if (appConfig && !appConfig.docker?.enabled) {
-        Utils.showToast('Docker 代理功能未启用', 'error');
-        return;
-    }
-    
-    // 生成加速命令
-    let acceleratedCommand = '';
-    
-    try {
-        // 处理不同格式的镜像名称
-        if (imageName.includes('/')) {
-            // 包含仓库地址: ghcr.io/user/image:tag 或 user/image:tag
-            if (imageName.includes('.')) {
-                // 包含域名的完整镜像名称
-                acceleratedCommand = `docker pull ${currentDomain}/${imageName}`;
-            } else {
-                // Docker Hub 用户镜像
-                acceleratedCommand = `docker pull ${currentDomain}/${imageName}`;
-            }
-        } else {
-            // 仅镜像名: nginx:latest
-            acceleratedCommand = `docker pull ${currentDomain}/${imageName}`;
-        }
-        
-        // 显示结果
-        resultText.textContent = acceleratedCommand;
-        resultBox.style.display = 'block';
-        Utils.showToast('加速命令生成成功 ✓', 'success');
-        
-    } catch (error) {
-        Utils.handleError(error, 'Docker 命令生成');
-    }
-}
-
-// 复制生成的结果
+// 复制示例命令
 async function copyResult(type) {
     const resultText = type === 'github' 
         ? document.getElementById('githubResultText').textContent
@@ -556,45 +478,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-    
-    if (dockerInput) {
-        dockerInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                generateDockerUrl();
-            }
-        });
-    }
 });
-
-// 检查 Docker HTTP 警告
-function checkDockerHttpWarning() {
-    if (!isHttps) {
-        const dockerTab = document.querySelector('[data-tab="docker"]');
-        if (dockerTab) {
-            // 在 Docker 标签页添加警告标识
-            const warningBadge = document.createElement('span');
-            warningBadge.className = 'http-warning-badge';
-            warningBadge.textContent = '⚠️';
-            warningBadge.title = 'Docker 代理需要 HTTPS';
-            dockerTab.appendChild(warningBadge);
-        }
-        
-        // 在 Docker 输入框区域显示警告提示
-        const dockerSection = document.getElementById('dockerSection');
-        if (dockerSection) {
-            const warningDiv = document.createElement('div');
-            warningDiv.className = 'http-warning-message';
-            warningDiv.innerHTML = `
-                <strong>⚠️ 警告：</strong> 当前使用 HTTP 协议访问<br>
-                Docker 代理功能需要 HTTPS 协议才能正常工作
-            `;
-            dockerSection.insertBefore(warningDiv, dockerSection.firstChild);
-        }
-    }
-}
 
 // 导出全局函数供 HTML 使用
 window.copyExample = copyExample;
 window.generateGithubUrl = generateGithubUrl;
-window.generateDockerUrl = generateDockerUrl;
 window.copyResult = copyResult;

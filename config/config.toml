@@ -17,6 +17,3 @@ token = ""
 [blacklist]
 enabled = true
 blacklistFile = "/app/config/blacklist.json"
-
-[docker]
-enabled = true

@@ -29,7 +29,6 @@ pub struct MetricsCollector {
 
     // Per-endpoint metrics
     github_requests: Arc<AtomicU64>,
-    docker_requests: Arc<AtomicU64>,
     fallback_requests: Arc<AtomicU64>,
 
     // Error counts by type
@@ -50,7 +49,6 @@ impl MetricsCollector {
             total_request_duration_ms: Arc::new(AtomicU64::new(0)),
             max_request_duration_ms: Arc::new(AtomicU64::new(0)),
             github_requests: Arc::new(AtomicU64::new(0)),
-            docker_requests: Arc::new(AtomicU64::new(0)),
             fallback_requests: Arc::new(AtomicU64::new(0)),
             proxy_errors: Arc::new(AtomicU64::new(0)),
             timeout_errors: Arc::new(AtomicU64::new(0)),
@@ -113,11 +111,6 @@ impl MetricsCollector {
         self.github_requests.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record Docker proxy request
-    pub fn record_docker_request(&self) {
-        self.docker_requests.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Record fallback proxy request
     pub fn record_fallback_request(&self) {
         self.fallback_requests.fetch_add(1, Ordering::Relaxed);
@@ -157,7 +150,6 @@ impl MetricsCollector {
         let total_duration = self.total_request_duration_ms.load(Ordering::Relaxed);
         let max_duration = self.max_request_duration_ms.load(Ordering::Relaxed);
         let github = self.github_requests.load(Ordering::Relaxed);
-        let docker = self.docker_requests.load(Ordering::Relaxed);
         let fallback = self.fallback_requests.load(Ordering::Relaxed);
         let proxy_err = self.proxy_errors.load(Ordering::Relaxed);
         let timeout_err = self.timeout_errors.load(Ordering::Relaxed);
@@ -209,10 +201,6 @@ impl MetricsCollector {
             # TYPE gh_proxy_github_requests counter\n\
             gh_proxy_github_requests {}\n\
             \n\
-            # HELP gh_proxy_docker_requests Docker proxy requests\n\
-            # TYPE gh_proxy_docker_requests counter\n\
-            gh_proxy_docker_requests {}\n\
-            \n\
             # HELP gh_proxy_fallback_requests Fallback proxy requests\n\
             # TYPE gh_proxy_fallback_requests counter\n\
             gh_proxy_fallback_requests {}\n\
@@ -241,7 +229,6 @@ impl MetricsCollector {
             bytes_sent,
             error_rate,
             github,
-            docker,
             fallback,
             proxy_err,
             timeout_err,
@@ -273,7 +260,6 @@ impl MetricsCollector {
             },
             "endpoints": {
                 "github": self.github_requests.load(Ordering::Relaxed),
-                "docker": self.docker_requests.load(Ordering::Relaxed),
                 "fallback": self.fallback_requests.load(Ordering::Relaxed)
             },
             "errors": {

@@ -9,7 +9,6 @@ pub struct ConfigResponse {
     pub server: ServerInfo,
     pub shell: ShellInfo,
     pub blacklist: BlacklistInfo,
-    pub docker: DockerInfo,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,11 +27,6 @@ pub struct BlacklistInfo {
     pub enabled: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DockerInfo {
-    pub enabled: bool,
-}
-
 /// GET /api/config - 获取配置信息
 pub async fn get_config(State(state): State<AppState>) -> Result<Json<ConfigResponse>, StatusCode> {
     info!("API: Fetching configuration");
@@ -46,9 +40,6 @@ pub async fn get_config(State(state): State<AppState>) -> Result<Json<ConfigResp
         },
         blacklist: BlacklistInfo {
             enabled: state.settings.blacklist.enabled,
-        },
-        docker: DockerInfo {
-            enabled: state.settings.docker.enabled,
         },
     };
 

@@ -3,7 +3,7 @@
 // This module handles:
 // - Signal handling for graceful shutdown (SIGTERM, SIGINT)
 // - Server state management during shutdown
-// - Liveness and readiness probes for Kubernetes/Docker
+// - Liveness and readiness probes for Kubernetes
 // - Request draining before shutdown
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

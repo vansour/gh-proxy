@@ -31,8 +31,6 @@ pub struct Settings {
     pub auth: AuthConfig,
     #[serde(default)]
     pub blacklist: BlacklistConfig,
-    #[serde(default)]
-    pub docker: DockerConfig,
 }
 
 impl Settings {
@@ -50,7 +48,6 @@ impl Settings {
 
     pub fn validate(&mut self) -> Result<(), ConfigError> {
         self.server.finalize();
-        self.docker.finalize()?;
         Ok(())
     }
 }
@@ -334,50 +331,6 @@ impl BlacklistConfig {
 
         Some(result)
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct DockerConfig {
-    pub enabled: bool,
-}
-
-impl Default for DockerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-        }
-    }
-}
-
-impl DockerConfig {
-    fn finalize(&mut self) -> Result<(), ConfigError> {
-        Ok(())
-    }
-
-    pub fn is_allowed_registry(&self, registry: &str) -> bool {
-        if !self.enabled {
-            return false;
-        }
-
-        let registry = registry.to_ascii_lowercase();
-        // List of supported registries
-        let allowed = [
-            "docker.io",
-            "registry-1.docker.io",
-            "ghcr.io",
-            "gcr.io",
-            "registry.k8s.io",
-            "nvcr.io",
-            "quay.io",
-            "mcr.microsoft.com",
-            "docker.elastic.co",
-        ];
-
-        allowed.iter().any(|&h| h == registry)
-    }
-
-
 }
 
 // GitHub-related helper structures

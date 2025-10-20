@@ -1,0 +1,11 @@
+services:
+  gh-proxy:
+    container_name: gh-proxy
+    build:
+      context: .
+      dockerfile: Containerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config
+    restart: unless-stopped

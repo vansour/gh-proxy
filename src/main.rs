@@ -1,4 +1,4 @@
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
@@ -17,13 +17,11 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tokio::signal;
 use tokio::sync::OnceCell;
-use tower::service_fn;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, instrument, warn};
 
 mod api;
 mod config;
-mod docker;
 mod github;
 mod metrics;
 mod shutdown;
@@ -36,8 +34,6 @@ pub struct AppState {
     pub client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
     /// Lazily loaded blacklist cache
     pub blacklist_cache: Arc<OnceCell<Vec<String>>>,
-    /// Docker registry token cache for offline/timeout resilience
-    pub docker_token_cache: docker::RegistryTokenCache,
     /// Graceful shutdown manager
     pub shutdown_manager: shutdown::ShutdownManager,
     /// Server uptime tracker
@@ -108,11 +104,11 @@ impl ProxyError {
                 size, limit
             ),
             ProxyError::InvalidGitHubUrl(path) => format!(
-                "Invalid Request\n\nThe path '{}' is not a valid proxy target.\n\nSupported formats:\n- https://github.com/owner/repo/...\n- http://example.com/...\n- github.com/owner/repo/...\n\nOr use specific endpoints:\n- /github/* for GitHub resources\n- /docker/* for Docker images\n",
+                "Invalid Request\n\nThe path '{}' is not a valid proxy target.\n\nSupported formats:\n- https://github.com/owner/repo/...\n- http://example.com/...\n- github.com/owner/repo/...\n\nOr use the specific endpoint:\n- /github/* for GitHub resources\n",
                 path
             ),
             ProxyError::Http(e) => format!(
-                "Connection Error\n\nFailed to connect to the target server.\n\nError details: {}\n\nPossible causes:\n- DNS resolution failure\n- Network connectivity issues\n- Firewall blocking outbound connections\n- Target server is down\n\nTroubleshooting:\n1. Check container logs: docker-compose logs -f\n2. Test DNS: docker exec gh-proxy nslookup raw.githubusercontent.com\n3. Test connection: docker exec gh-proxy curl -v https://raw.githubusercontent.com\n",
+                "Connection Error\n\nFailed to connect to the target server.\n\nError details: {}\n\nPossible causes:\n- DNS resolution failure\n- Network connectivity issues\n- Firewall blocking outbound connections\n- Target server is down\n",
                 e
             ),
             _ => format!("{}\n\nPlease check the URL and try again.\n", self),
@@ -125,7 +121,6 @@ pub type ProxyResult<T> = Result<T, ProxyError>;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProxyKind {
     GitHub,
-    Docker,
 }
 
 #[derive(Clone)]
@@ -146,7 +141,6 @@ impl RequestLifecycle {
 
         match proxy_kind {
             ProxyKind::GitHub => state.metrics.record_github_request(),
-            ProxyKind::Docker => state.metrics.record_docker_request(),
         }
 
         let metrics_guard = state.metrics.record_request_start();
@@ -243,7 +237,6 @@ async fn main() -> anyhow::Result<()> {
     // Log configuration info
     info!("Starting gh-proxy server");
     info!("Log level: {}", settings.log.get_level());
-    info!("Docker proxy enabled: {}", settings.docker.enabled);
     info!(
         "Blacklist enabled: {} (lazy loading)",
         settings.blacklist.enabled
@@ -268,17 +261,10 @@ async fn main() -> anyhow::Result<()> {
         github_config: Arc::new(github_config),
         client,
         blacklist_cache: Arc::new(OnceCell::new()),
-        docker_token_cache: docker::RegistryTokenCache::new(),
         shutdown_manager,
         uptime_tracker,
         metrics,
     };
-
-    let fallback_state = app_state.clone();
-    let fallback_service = service_fn(move |req: Request<Body>| {
-        let state = fallback_state.clone();
-        async move { Ok::<_, Infallible>(fallback_proxy(state, req).await) }
-    });
 
     // 配置 CORS - 允许跨域访问
     let cors = CorsLayer::new()
@@ -297,13 +283,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/app.js", get(serve_static_file))
         .route("/favicon.ico", get(serve_favicon))
         .route("/api/config", get(api::get_config))
-        .route("/v2", any(docker::docker_v2_root))
-        .route("/v2/", any(docker::docker_v2_root))
-        .route("/v2/{*path}", any(docker::docker_v2_proxy))
         .route("/github/{*path}", any(github::github_proxy))
-        .route("/docker/{*path}", any(docker::docker_proxy))
+        .fallback(fallback_proxy)
         .with_state(app_state.clone())
-        .fallback_service(fallback_service)
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -321,10 +303,7 @@ async fn main() -> anyhow::Result<()> {
     info!("  - GET  /metrics           - Prometheus metrics");
     info!("  - GET  /metrics/json      - JSON metrics");
     info!("  - GET  /api/config        - Get configuration");
-    info!("  - ANY  /v2                - Docker Registry v2 API root");
-    info!("  - ANY  /v2/*path          - Docker Registry v2 API");
     info!("  - ANY  /github/*path      - GitHub proxy");
-    info!("  - ANY  /docker/*path      - Docker registry proxy");
     info!("  - ANY  /*path             - Fallback proxy");
     info!("=================================================");
 
@@ -429,7 +408,7 @@ async fn index() -> impl axum::response::IntoResponse {
     <title>gh-proxy</title>
 </head>
 <body>
-    <h1>gh-proxy - GitHub & Docker Proxy</h1>
+    <h1>gh-proxy - GitHub Proxy</h1>
     <p>Web UI not available. Please check the installation.</p>
 </body>
 </html>"#
@@ -640,16 +619,13 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
 
 /// Check if a path starts with a GitHub domain
 fn is_github_domain_path(path: &str) -> bool {
-    path.starts_with("github.com/") || 
-    path.starts_with("raw.githubusercontent.com/") ||
-    path.starts_with("api.github.com/") ||
-    path.starts_with("gist.github.com/") ||
-    path.starts_with("codeload.github.com/") ||
-    (path.contains("github") && (
-        path.contains(".com/") || 
-        path.contains(".io/") || 
-        path.contains(".org/")
-    ))
+    path.starts_with("github.com/")
+        || path.starts_with("raw.githubusercontent.com/")
+        || path.starts_with("api.github.com/")
+        || path.starts_with("gist.github.com/")
+        || path.starts_with("codeload.github.com/")
+        || (path.contains("github")
+            && (path.contains(".com/") || path.contains(".io/") || path.contains(".org/")))
 }
 
 fn is_shell_script(uri: &Uri) -> bool {
@@ -658,7 +634,7 @@ fn is_shell_script(uri: &Uri) -> bool {
 }
 
 #[instrument(skip_all)]
-async fn fallback_proxy(state: AppState, req: Request<Body>) -> Response<Body> {
+async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
     let method = req.method();
 
@@ -875,14 +851,7 @@ pub async fn proxy_request(
     let disable_compression = state.settings.shell.editor && processor.is_some();
     sanitize_request_headers(req.headers_mut(), disable_compression);
 
-    match proxy_kind {
-        ProxyKind::GitHub => {
-            apply_github_headers(req.headers_mut(), &state.settings.auth);
-        }
-        ProxyKind::Docker => {
-            // Docker headers are already set by caller if needed
-        }
-    }
+    apply_github_headers(req.headers_mut(), &state.settings.auth);
 
     info!("Sending request to: {}", target_uri);
 
@@ -925,72 +894,6 @@ pub async fn proxy_request(
             let error = ProxyError::SizeExceeded(size_mb, state.settings.server.size_limit);
             lifecycle.fail(Some(&error));
             return Err(error);
-        }
-    }
-
-    // Handle redirects for Docker blobs - fetch the redirect target directly
-    // This prevents the Docker client from having to make the second request to CDN
-    if matches!(
-        status,
-        StatusCode::MOVED_PERMANENTLY
-            | StatusCode::FOUND
-            | StatusCode::TEMPORARY_REDIRECT
-            | StatusCode::PERMANENT_REDIRECT
-    ) && proxy_kind == ProxyKind::Docker
-        && target_uri.path().contains("/blobs/")
-    {
-        if let Some(location) = headers.get(header::LOCATION) {
-            if let Ok(location_str) = location.to_str() {
-                info!("Docker blob redirect detected: {}", location_str);
-
-                // Parse the redirect location
-                if let Ok(redirect_uri) = location_str.parse::<Uri>() {
-                    // Fetch from the redirect location
-                    let redirect_req = Request::builder()
-                        .method("GET")
-                        .uri(redirect_uri.clone())
-                        .body(Body::empty())
-                        .map_err(|e| ProxyError::HttpBuilder(e))?;
-
-                    info!("Following blob redirect to: {}", redirect_uri);
-
-                    match state.client.request(redirect_req).await {
-                        Ok(blob_response) => {
-                            info!(
-                                "Successfully fetched blob from redirect: status={}",
-                                blob_response.status()
-                            );
-                            let (mut parts, body) = blob_response.into_parts();
-
-                            let body_bytes =
-                                match collect_body_with_limit(body, size_limit_mb).await {
-                                    Ok(bytes) => bytes,
-                                    Err(err) => {
-                                        lifecycle.fail(Some(&err));
-                                        return Err(err);
-                                    }
-                                };
-
-                            sanitize_response_headers(&mut parts.headers, true, false, false);
-                            let content_length_value =
-                                HeaderValue::from_str(&body_bytes.len().to_string())
-                                    .unwrap_or_else(|_| HeaderValue::from_static("0"));
-                            parts
-                                .headers
-                                .insert(hyper::header::CONTENT_LENGTH, content_length_value);
-
-                            let bytes_sent = body_bytes.len() as u64;
-                            let response = Response::from_parts(parts, Body::from(body_bytes));
-                            lifecycle.success(bytes_sent);
-                            return Ok(response);
-                        }
-                        Err(e) => {
-                            warn!("Failed to fetch blob from redirect: {}", e);
-                            // Fall through to return the redirect response
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -1341,7 +1244,7 @@ fn setup_tracing(log_config: &config::LogConfig) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(log_config.get_level()));
 
-    // Create stdout layer only (logs to console, captured by Docker logs)
+    // Create stdout layer only (logs to console)
     let stdout_layer = fmt::layer()
         .with_writer(std::io::stdout)
         .with_target(false)
@@ -1353,5 +1256,5 @@ fn setup_tracing(log_config: &config::LogConfig) {
         .with(stdout_layer)
         .init();
 
-    eprintln!("Logging initialized: console only (Docker logs)");
+    eprintln!("Logging initialized: console only");
 }

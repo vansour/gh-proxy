@@ -26,11 +26,3 @@ tower = { version = "0.5.2", features = ["limit", "buffer"] }
 tower-http = { version = "0.6.6", features = ["trace", "fs", "cors"] }
 base64 = "0.22.1"
 regex = "1.12.2"
-
-# Release profile optimizations for production builds
-[profile.release]
-opt-level = 3              # Maximum optimization
-lto = true                 # Enable Link Time Optimization for better performance
-codegen-units = 1         # Single codegen unit for better optimization
-strip = true              # Strip debug symbols from binary
-panic = "abort"           # Smaller panic handling code

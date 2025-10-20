@@ -103,23 +103,24 @@ pub fn resolve_github_target(_state: &AppState, path: &str) -> ProxyResult<Uri> 
 pub fn convert_github_blob_to_raw(url: &str) -> String {
     // Convert github.com/owner/repo/blob/branch/file to raw.githubusercontent.com/owner/repo/branch/file
     // Also support other GitHub domains like api.github.com, custom.github.com, etc.
-    
+
     if !url.contains("/blob/") {
         return url.to_string();
     }
 
-    // Replace /blob/ with / in any GitHub domain URL
-    if url.contains("github") && url.contains(".com") {
-        // Handle standard github.com domain
-        if url.contains("github.com") && url.contains("/blob/") {
-            return url.replace("github.com", "raw.githubusercontent.com")
-                .replace("/blob/", "/");
-        }
-        // Handle other GitHub domains (api.github.com, raw.githubusercontent.com, etc.)
-        // Just remove /blob/ path segment
-        return url.replace("/blob/", "/");
+    // Handle standard github.com domain - convert to raw.githubusercontent.com
+    if url.contains("://github.com/") && url.contains("/blob/") {
+        return url
+            .replace("://github.com/", "://raw.githubusercontent.com/")
+            .replace("/blob/", "/");
     }
     
+    // For other GitHub domains (api.github.com, custom domains, etc.)
+    // Just remove /blob/ path segment without changing the domain
+    if url.contains("/blob/") {
+        return url.replace("/blob/", "/");
+    }
+
     url.to_string()
 }
 
@@ -134,12 +135,13 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
     // - https://github.com/owner/repo/blob/...
     // - https://github.com/owner/repo/raw/...
     // - https://github.com/owner/repo/tree/...
-    
+
     // Check if URL contains any GitHub domain
-    let github_domain_check = url.contains("github.com") || 
-                               url.contains("githubusercontent.com") ||
-                               (url.contains("github") && (url.contains(".com") || url.contains(".io") || url.contains(".org")));
-    
+    let github_domain_check = url.contains("github.com")
+        || url.contains("githubusercontent.com")
+        || (url.contains("github")
+            && (url.contains(".com") || url.contains(".io") || url.contains(".org")));
+
     if !github_domain_check {
         return false;
     }
@@ -208,7 +210,9 @@ mod tests {
     fn test_is_repo_homepage_other_domains() {
         // Test with other GitHub domains
         assert!(is_github_repo_homepage("https://api.github.com/owner/repo"));
-        assert!(is_github_repo_homepage("https://api.github.com/owner/repo/"));
+        assert!(is_github_repo_homepage(
+            "https://api.github.com/owner/repo/"
+        ));
         assert!(!is_github_repo_homepage(
             "https://api.github.com/owner/repo/blob/main/file.txt"
         ));
