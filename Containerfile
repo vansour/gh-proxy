@@ -1,4 +1,4 @@
-FROM ghcr.io/rust:trixie as builder
+FROM docker.io/rust:trixie as builder
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
@@ -6,7 +6,7 @@ COPY src ./src
 COPY config ./config
 RUN cargo build --release
 
-FROM ghcr.io/debian:trixie-slim
+FROM docker.io/debian:trixie-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
