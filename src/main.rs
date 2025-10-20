@@ -849,7 +849,7 @@ pub async fn proxy_request(
     let max_redirects = 10;
     let mut redirect_count = 0;
     let mut current_uri = target_uri.clone();
-    
+
     // Store initial request info for redirect handling
     let initial_method = req.method().clone();
     let initial_headers = req.headers().clone();
@@ -882,9 +882,12 @@ pub async fn proxy_request(
         // Handle redirects automatically
         if status.is_redirection() {
             redirect_count += 1;
-            
+
             if redirect_count > max_redirects {
-                error!("Too many redirects ({}), stopping at: {}", max_redirects, current_uri);
+                error!(
+                    "Too many redirects ({}), stopping at: {}",
+                    max_redirects, current_uri
+                );
                 let error = ProxyError::ProcessingError(format!(
                     "Too many redirects ({}), possible infinite loop",
                     max_redirects
@@ -933,7 +936,10 @@ pub async fn proxy_request(
                         match format!("{}://{}{}", scheme, authority, location).parse::<Uri>() {
                             Ok(absolute_uri) => absolute_uri,
                             Err(e) => {
-                                error!("Failed to construct absolute URI from relative location: {}", e);
+                                error!(
+                                    "Failed to construct absolute URI from relative location: {}",
+                                    e
+                                );
                                 let error = ProxyError::InvalidTarget(format!(
                                     "Invalid redirect location: {}",
                                     location
@@ -963,14 +969,14 @@ pub async fn proxy_request(
                 .uri(current_uri.clone())
                 .body(Body::empty())
                 .map_err(ProxyError::HttpBuilder)?;
-            
+
             // Copy headers from initial request
             *req.headers_mut() = initial_headers.clone();
-            
+
             // Sanitize and modify headers for the redirect request
             sanitize_request_headers(req.headers_mut(), disable_compression);
             apply_github_headers(req.headers_mut(), &state.settings.auth);
-            
+
             // Continue to follow the redirect
             continue;
         }
