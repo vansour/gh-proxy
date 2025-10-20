@@ -114,7 +114,7 @@ pub fn convert_github_blob_to_raw(url: &str) -> String {
             .replace("://github.com/", "://raw.githubusercontent.com/")
             .replace("/blob/", "/");
     }
-    
+
     // For other GitHub domains (api.github.com, custom domains, etc.)
     // Just remove /blob/ path segment without changing the domain
     if url.contains("/blob/") {

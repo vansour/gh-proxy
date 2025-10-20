@@ -194,14 +194,14 @@ function updateConfigUI() {
     }
     
     // 更新黑名单状态
-    const blacklistEnabled = appConfig.blacklist?.enabled ? '✅ 已启用' : '❌ 未启用';
+    const blacklistEnabled = appConfig.blacklist?.enabled ? '已启用' : '未启用';
     const blacklistEnabledEl = document.getElementById('blacklistEnabled');
     if (blacklistEnabledEl) {
         blacklistEnabledEl.textContent = blacklistEnabled;
     }
     
     // 更新编辑器状态
-    const editorEnabled = appConfig.shell?.editor ? '✅ 已启用' : '❌ 未启用';
+    const editorEnabled = appConfig.shell?.editor ? '已启用' : '未启用';
     const editorEnabledEl = document.getElementById('editorEnabled');
     if (editorEnabledEl) {
         editorEnabledEl.textContent = editorEnabled;

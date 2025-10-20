@@ -832,6 +832,7 @@ fn add_proxy_to_html_urls(content: &str, proxy_url: &str) -> String {
 /// - Stream forwarding with backpressure handling
 /// - Zero-copy body forwarding for binary content
 /// - Selective in-memory buffering for text processing only
+/// - Automatic redirect following (3xx responses)
 pub async fn proxy_request(
     state: &AppState,
     mut req: Request<Body>,
@@ -844,8 +845,17 @@ pub async fn proxy_request(
     let size_limit_mb = state.settings.server.size_limit;
     let size_limit_bytes = size_limit_mb * 1024 * 1024;
 
+    // Follow redirects automatically (max 10 redirects to prevent infinite loops)
+    let max_redirects = 10;
+    let mut redirect_count = 0;
+    let mut current_uri = target_uri.clone();
+    
+    // Store initial request info for redirect handling
+    let initial_method = req.method().clone();
+    let initial_headers = req.headers().clone();
+
     // Update request URI
-    *req.uri_mut() = target_uri.clone();
+    *req.uri_mut() = current_uri.clone();
 
     // Sanitize and modify headers
     let disable_compression = state.settings.shell.editor && processor.is_some();
@@ -853,17 +863,120 @@ pub async fn proxy_request(
 
     apply_github_headers(req.headers_mut(), &state.settings.auth);
 
-    info!("Sending request to: {}", target_uri);
+    let response = loop {
+        info!("Sending request to: {}", current_uri);
 
-    // Send request using the shared client (connection pooling)
-    let response = match state.client.request(req).await {
-        Ok(resp) => resp,
-        Err(e) => {
-            error!("Failed to connect to {}: {}", target_uri, e);
-            let error = ProxyError::Http(Box::new(e));
-            lifecycle.fail(Some(&error));
-            return Err(error);
+        // Send request using the shared client (connection pooling)
+        let response = match state.client.request(req).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!("Failed to connect to {}: {}", current_uri, e);
+                let error = ProxyError::Http(Box::new(e));
+                lifecycle.fail(Some(&error));
+                return Err(error);
+            }
+        };
+
+        let status = response.status();
+
+        // Handle redirects automatically
+        if status.is_redirection() {
+            redirect_count += 1;
+            
+            if redirect_count > max_redirects {
+                error!("Too many redirects ({}), stopping at: {}", max_redirects, current_uri);
+                let error = ProxyError::ProcessingError(format!(
+                    "Too many redirects ({}), possible infinite loop",
+                    max_redirects
+                ));
+                lifecycle.fail(Some(&error));
+                return Err(error);
+            }
+
+            // Get the Location header for the redirect
+            let location = match response.headers().get(hyper::header::LOCATION) {
+                Some(loc) => match loc.to_str() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Invalid Location header: {}", e);
+                        let error = ProxyError::ProcessingError(format!(
+                            "Invalid Location header in redirect: {}",
+                            e
+                        ));
+                        lifecycle.fail(Some(&error));
+                        return Err(error);
+                    }
+                },
+                None => {
+                    error!("Redirect response without Location header");
+                    let error = ProxyError::ProcessingError(
+                        "Redirect response (3xx) without Location header".to_string(),
+                    );
+                    lifecycle.fail(Some(&error));
+                    return Err(error);
+                }
+            };
+
+            info!(
+                "Following redirect #{}: {} -> {}",
+                redirect_count, current_uri, location
+            );
+
+            // Parse the new location
+            current_uri = match location.parse::<Uri>() {
+                Ok(uri) => {
+                    // Handle relative URLs by combining with the current URI
+                    if uri.scheme().is_none() {
+                        // Relative URL - construct absolute URL
+                        let scheme = current_uri.scheme_str().unwrap_or("https");
+                        let authority = current_uri.authority().map(|a| a.as_str()).unwrap_or("");
+                        match format!("{}://{}{}", scheme, authority, location).parse::<Uri>() {
+                            Ok(absolute_uri) => absolute_uri,
+                            Err(e) => {
+                                error!("Failed to construct absolute URI from relative location: {}", e);
+                                let error = ProxyError::InvalidTarget(format!(
+                                    "Invalid redirect location: {}",
+                                    location
+                                ));
+                                lifecycle.fail(Some(&error));
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        uri
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to parse redirect location '{}': {}", location, e);
+                    let error = ProxyError::InvalidTarget(format!(
+                        "Invalid redirect location: {}",
+                        location
+                    ));
+                    lifecycle.fail(Some(&error));
+                    return Err(error);
+                }
+            };
+
+            // Create a new request for the redirect (reuse method and headers from initial request)
+            req = Request::builder()
+                .method(initial_method.clone())
+                .uri(current_uri.clone())
+                .body(Body::empty())
+                .map_err(ProxyError::HttpBuilder)?;
+            
+            // Copy headers from initial request
+            *req.headers_mut() = initial_headers.clone();
+            
+            // Sanitize and modify headers for the redirect request
+            sanitize_request_headers(req.headers_mut(), disable_compression);
+            apply_github_headers(req.headers_mut(), &state.settings.auth);
+            
+            // Continue to follow the redirect
+            continue;
         }
+
+        // Not a redirect, return the response
+        break response;
     };
 
     let status = response.status();
@@ -898,8 +1011,13 @@ pub async fn proxy_request(
     }
 
     let shell_processing_enabled = state.settings.shell.editor && processor.is_some();
-    let needs_text_processing =
-        is_response_needs_text_processing(&content_type, &target_uri, shell_processing_enabled);
+
+    // Never perform text processing on redirect responses (3xx status codes)
+    // These responses typically have minimal or empty bodies and must preserve their
+    // Location header and other redirect-related information
+    let is_redirect = status.is_redirection();
+    let needs_text_processing = !is_redirect
+        && is_response_needs_text_processing(&content_type, &target_uri, shell_processing_enabled);
 
     // Get response body
     let (mut parts, body) = response.into_parts();
@@ -1068,6 +1186,9 @@ fn sanitize_response_headers(
         headers.remove("etag");
         headers.remove("last-modified");
     }
+
+    // IMPORTANT: Keep Location header for redirects (3xx responses)
+    // The Location header should be preserved as-is for proper redirect handling
 }
 
 fn sanitize_request_headers(headers: &mut HeaderMap, disable_compression: bool) {
