@@ -65,7 +65,7 @@ pub fn resolve_github_target(_state: &AppState, path: &str) -> ProxyResult<Uri> 
         ));
     }
 
-    // Build raw.githubusercontent.com URL
+    // Build raw.githubusercontent.com URL (or appropriate raw domain)
     let parts: Vec<&str> = path.splitn(4, '/').collect();
     if parts.len() < 3 {
         return Err(ProxyError::InvalidTarget(
@@ -84,6 +84,8 @@ pub fn resolve_github_target(_state: &AppState, path: &str) -> ProxyResult<Uri> 
         format!("/{}/{}/{}/{}", owner, repo, branch, file_path)
     };
 
+    // Use raw.githubusercontent.com as the default raw content domain
+    // This works with all GitHub domains (github.com, enterprise domains, etc.)
     let authority = Authority::from_static("raw.githubusercontent.com");
     let path_and_query = PathAndQuery::from_str(&target_path)
         .map_err(|e| ProxyError::InvalidTarget(format!("Invalid path: {}", e)))?;
@@ -97,14 +99,28 @@ pub fn resolve_github_target(_state: &AppState, path: &str) -> ProxyResult<Uri> 
 }
 
 /// Convert GitHub blob URL to raw URL
+/// Supports any GitHub domain including custom enterprise domains
 pub fn convert_github_blob_to_raw(url: &str) -> String {
     // Convert github.com/owner/repo/blob/branch/file to raw.githubusercontent.com/owner/repo/branch/file
-    if url.contains("github.com") && url.contains("/blob/") {
-        url.replace("github.com", "raw.githubusercontent.com")
-            .replace("/blob/", "/")
-    } else {
-        url.to_string()
+    // Also support other GitHub domains like api.github.com, custom.github.com, etc.
+    
+    if !url.contains("/blob/") {
+        return url.to_string();
     }
+
+    // Replace /blob/ with / in any GitHub domain URL
+    if url.contains("github") && url.contains(".com") {
+        // Handle standard github.com domain
+        if url.contains("github.com") && url.contains("/blob/") {
+            return url.replace("github.com", "raw.githubusercontent.com")
+                .replace("/blob/", "/");
+        }
+        // Handle other GitHub domains (api.github.com, raw.githubusercontent.com, etc.)
+        // Just remove /blob/ path segment
+        return url.replace("/blob/", "/");
+    }
+    
+    url.to_string()
 }
 
 /// Check if URL is a GitHub repository homepage
@@ -112,16 +128,42 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
     // Match patterns like:
     // - https://github.com/owner/repo
     // - https://github.com/owner/repo/
+    // - https://api.github.com/owner/repo
+    // - https://custom.github.com/owner/repo
     // But NOT:
     // - https://github.com/owner/repo/blob/...
     // - https://github.com/owner/repo/raw/...
     // - https://github.com/owner/repo/tree/...
-    if !url.contains("github.com/") {
+    
+    // Check if URL contains any GitHub domain
+    let github_domain_check = url.contains("github.com") || 
+                               url.contains("githubusercontent.com") ||
+                               (url.contains("github") && (url.contains(".com") || url.contains(".io") || url.contains(".org")));
+    
+    if !github_domain_check {
         return false;
     }
 
-    let after_github = url.split("github.com/").nth(1).unwrap_or("");
-    let parts: Vec<&str> = after_github.trim_end_matches('/').split('/').collect();
+    // Extract the part after the domain
+    let after_domain = if let Some(pos) = url.find("github.com") {
+        url.split_at(pos + "github.com".len()).1
+    } else if let Some(pos) = url.find("githubusercontent.com") {
+        url.split_at(pos + "githubusercontent.com".len()).1
+    } else {
+        // For other GitHub domains, find the first '/' after the domain
+        if let Some(slash_pos) = url.find("://") {
+            if let Some(next_slash) = url[slash_pos + 3..].find('/') {
+                &url[slash_pos + 3 + next_slash..]
+            } else {
+                ""
+            }
+        } else {
+            return false;
+        }
+    };
+
+    let after_domain = after_domain.trim_start_matches('/').trim_end_matches('/');
+    let parts: Vec<&str> = after_domain.split('/').collect();
 
     // Should have exactly 2 parts (owner/repo) and no more
     parts.len() == 2
@@ -142,6 +184,14 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_blob_to_raw_other_domains() {
+        // Test other GitHub domains
+        let blob_url = "https://api.github.com/owner/repo/blob/main/file.txt";
+        let raw_url = convert_github_blob_to_raw(blob_url);
+        assert_eq!(raw_url, "https://api.github.com/owner/repo/main/file.txt");
+    }
+
+    #[test]
     fn test_is_repo_homepage() {
         assert!(is_github_repo_homepage("https://github.com/owner/repo"));
         assert!(is_github_repo_homepage("https://github.com/owner/repo/"));
@@ -152,5 +202,15 @@ mod tests {
             "https://github.com/owner/repo/tree/main"
         ));
         assert!(!is_github_repo_homepage("https://example.com"));
+    }
+
+    #[test]
+    fn test_is_repo_homepage_other_domains() {
+        // Test with other GitHub domains
+        assert!(is_github_repo_homepage("https://api.github.com/owner/repo"));
+        assert!(is_github_repo_homepage("https://api.github.com/owner/repo/"));
+        assert!(!is_github_repo_homepage(
+            "https://api.github.com/owner/repo/blob/main/file.txt"
+        ));
     }
 }

@@ -626,7 +626,8 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
         return converted.parse().map_err(|e| format!("Invalid URL: {}", e));
     }
 
-    if path.starts_with("github.com/") || path.starts_with("raw.githubusercontent.com/") {
+    // Check for GitHub domain paths (github.com/..., api.github.com/..., etc.)
+    if is_github_domain_path(&path) {
         let full_url = format!("https://{}", path);
         let converted = github::convert_github_blob_to_raw(&full_url);
         return converted
@@ -635,6 +636,20 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
     }
 
     Err(format!("No valid target found for path: {}", path))
+}
+
+/// Check if a path starts with a GitHub domain
+fn is_github_domain_path(path: &str) -> bool {
+    path.starts_with("github.com/") || 
+    path.starts_with("raw.githubusercontent.com/") ||
+    path.starts_with("api.github.com/") ||
+    path.starts_with("gist.github.com/") ||
+    path.starts_with("codeload.github.com/") ||
+    (path.contains("github") && (
+        path.contains(".com/") || 
+        path.contains(".io/") || 
+        path.contains(".org/")
+    ))
 }
 
 fn is_shell_script(uri: &Uri) -> bool {

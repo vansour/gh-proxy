@@ -382,28 +382,34 @@ impl DockerConfig {
 
 // GitHub-related helper structures
 pub struct GitHubConfig {
-    pub allowed_hosts: Vec<String>,
     pub default_host: String,
 }
 
 impl GitHubConfig {
     pub fn new(_auth_token: &str) -> Self {
         Self {
-            allowed_hosts: vec![
-                "github.com".to_string(),
-                "raw.githubusercontent.com".to_string(),
-                "api.github.com".to_string(),
-                "codeload.github.com".to_string(),
-                "objects.githubusercontent.com".to_string(),
-                "gist.github.com".to_string(),
-            ],
             default_host: "github.com".to_string(),
         }
     }
 
+    /// Check if a host is a valid GitHub domain
+    /// Supports *.github.com and *.githubusercontent.com domains
     pub fn is_allowed(&self, host: &str) -> bool {
         let host = host.to_ascii_lowercase();
-        self.allowed_hosts.iter().any(|h| h == &host)
+        Self::is_github_domain(&host)
+    }
+
+    /// Check if a host is a GitHub domain
+    /// Matches any domain ending with .github.com or .githubusercontent.com (including subdomains)
+    pub fn is_github_domain(host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        host.ends_with(".github.com") || 
+        host == "github.com" ||
+        host.ends_with(".githubusercontent.com") || 
+        host == "raw.githubusercontent.com" ||
+        host == "gist.github.com" ||
+        // Support custom GitHub domains in enterprise deployments
+        host.contains("github") && (host.contains(".com") || host.contains(".io") || host.contains(".org"))
     }
 }
 
