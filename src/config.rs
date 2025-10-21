@@ -93,15 +93,10 @@ impl ServerConfig {
             ));
         }
 
-        // Size limit should be reasonable (at least 1 MB, at most 10 GB)
+        // Size limit should be at least 1 MB
         if self.size_limit == 0 {
             return Err(ConfigError::Validation(
                 "server.sizeLimit must be at least 1 MB".to_string(),
-            ));
-        }
-        if self.size_limit > 10240 {
-            return Err(ConfigError::Validation(
-                "server.sizeLimit cannot exceed 10240 MB (10 GB)".to_string(),
             ));
         }
 
