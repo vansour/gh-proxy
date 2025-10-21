@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile optimization
 # Stage 1: Build stage - compile Rust binary
-FROM docker.io/rust:1.75-slim-bookworm as builder
+FROM docker.io/rust:trixie as builder
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ RUN cargo build --release --locked && \
     strip target/release/gh-proxy
 
 # Stage 2: Runtime stage - minimal image
-FROM docker.io/debian:bookworm-slim
+FROM docker.io/debian:trixie-slim
 
 # Install only essential runtime dependencies
 # ca-certificates: For HTTPS/TLS connections

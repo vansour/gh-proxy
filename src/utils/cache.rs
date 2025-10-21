@@ -5,8 +5,6 @@ use std::sync::OnceLock;
 static INDEX_HTML: OnceLock<String> = OnceLock::new();
 static FAVICON_ICO: OnceLock<Vec<u8>> = OnceLock::new();
 static INDEX_HTML_ETAG: OnceLock<String> = OnceLock::new();
-#[allow(dead_code)]
-static FAVICON_ETAG: OnceLock<String> = OnceLock::new();
 
 /// Generate a simple ETag from content hash
 fn calculate_etag(data: &[u8]) -> String {
@@ -51,15 +49,6 @@ pub fn get_favicon() -> &'static Vec<u8> {
     FAVICON_ICO.get_or_init(|| match std::fs::read("/app/web/favicon.ico") {
         Ok(content) => content,
         Err(_) => Vec::new(),
-    })
-}
-
-/// Get cached favicon ETag
-#[allow(dead_code)]
-pub fn get_favicon_etag() -> &'static String {
-    FAVICON_ETAG.get_or_init(|| {
-        let favicon = get_favicon();
-        calculate_etag(favicon)
     })
 }
 

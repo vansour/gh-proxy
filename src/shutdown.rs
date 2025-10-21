@@ -170,20 +170,6 @@ impl Clone for ShutdownManager {
     }
 }
 
-/// Health check information
-#[derive(Debug, Clone, serde::Serialize)]
-#[allow(dead_code)]
-pub struct HealthStatus {
-    /// Server state (starting, ready, shutting_down, stopped)
-    pub state: String,
-    /// Number of active requests
-    pub active_requests: usize,
-    /// Server uptime in seconds
-    pub uptime_secs: u64,
-    /// Whether server is accepting new requests
-    pub accepting_requests: bool,
-}
-
 /// Tracks server uptime
 pub struct UptimeTracker {
     start_time: std::time::Instant,
