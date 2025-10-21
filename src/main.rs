@@ -59,6 +59,9 @@ pub enum ProxyError {
     #[error("invalid GitHub URL: {0}")]
     InvalidGitHubUrl(String),
 
+    #[error("GitHub web page, not a file: {0}")]
+    GitHubWebPage(String),
+
     #[error("GitHub repository homepage not supported: {0}")]
     GitHubRepoHomepage(String),
 
@@ -79,7 +82,8 @@ impl ProxyError {
             ProxyError::AccessDenied(_) => StatusCode::FORBIDDEN,
             ProxyError::InvalidTarget(_)
             | ProxyError::InvalidGitHubUrl(_)
-            | ProxyError::GitHubRepoHomepage(_) => StatusCode::BAD_REQUEST,
+            | ProxyError::GitHubRepoHomepage(_)
+            | ProxyError::GitHubWebPage(_) => StatusCode::BAD_REQUEST,
             ProxyError::SizeExceeded(_, _) => StatusCode::PAYLOAD_TOO_LARGE,
             ProxyError::Http(_) => StatusCode::BAD_GATEWAY,
             ProxyError::UnsupportedHost(_) => StatusCode::NOT_IMPLEMENTED,
@@ -94,6 +98,10 @@ impl ProxyError {
             ProxyError::AccessDenied(ip) => format!(
                 "Access Denied\n\nYour IP address has been blacklisted: {}\n\nThis IP has been blocked by the proxy administrator.\n\nIf you believe this is an error, please contact the administrator.\n",
                 ip
+            ),
+            ProxyError::GitHubWebPage(url) => format!(
+                "GitHub Web Page Detected\n\nThe URL you requested is a GitHub web page, not a downloadable file:\n{}\n\nThis path includes pages like:\n- Package containers (/pkgs/container/)\n- Releases (/releases/)\n- GitHub Actions (/actions/)\n- Repository settings (/settings/)\n- Issues and pull requests\n\nIf you want to download a specific file, please use one of these formats:\n- Raw file URL: https://raw.githubusercontent.com/owner/repo/branch/path/to/file\n- Blob URL (will be auto-converted): https://github.com/owner/repo/blob/branch/path/to/file\n- Release download: https://github.com/owner/repo/releases/download/tag/filename\n",
+                url
             ),
             ProxyError::GitHubRepoHomepage(url) => format!(
                 "GitHub Repository Homepage Detected\n\nThe URL you requested appears to be a GitHub repository homepage:\n{}\n\nRepository homepages are web pages (HTML), not downloadable files.\n\nIf you want to download a specific file, please use one of these formats:\n- Raw file URL: https://raw.githubusercontent.com/owner/repo/branch/path/to/file\n- Blob URL (will be auto-converted): https://github.com/owner/repo/blob/branch/path/to/file\n",
@@ -178,7 +186,8 @@ impl RequestLifecycle {
                 }
                 ProxyError::InvalidTarget(_)
                 | ProxyError::InvalidGitHubUrl(_)
-                | ProxyError::GitHubRepoHomepage(_) => {
+                | ProxyError::GitHubRepoHomepage(_)
+                | ProxyError::GitHubWebPage(_) => {
                     self.metrics.record_proxy_error();
                 }
                 ProxyError::Http(_)
@@ -223,7 +232,10 @@ fn error_response(error: ProxyError) -> Response<Body> {
             Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::from("Internal Server Error"))
-                .unwrap()
+                .unwrap_or_else(|_| {
+                    // This should never happen, but if it does, return a basic response
+                    Response::new(Body::from("Internal Server Error"))
+                })
         })
 }
 
@@ -268,10 +280,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 配置 CORS - 允许跨域访问
     let cors = CorsLayer::new()
-        .allow_origin(Any) // 允许任何来源，生产环境建议限制具体域名
-        .allow_methods(Any) // 允许所有HTTP方法
-        .allow_headers(Any) // 允许所有请求头
-        .expose_headers(Any); // 暴露所有响应头
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .expose_headers(Any);
 
     let app = Router::new()
         .route("/", get(handlers::static_files::index))
@@ -380,9 +392,16 @@ fn resolve_target_uri_with_validation(uri: &Uri) -> ProxyResult<Uri> {
         ProxyError::InvalidGitHubUrl(msg)
     })?;
 
+    let target_str = target_uri.to_string();
+
+    // Check if it's a non-downloadable GitHub web path (pkgs, releases, etc.)
+    if github::is_github_web_only_path(&target_str) {
+        return Err(ProxyError::GitHubWebPage(target_str));
+    }
+
     // Check if it's a GitHub repository homepage
-    if github::is_github_repo_homepage(target_uri.to_string().as_str()) {
-        return Err(ProxyError::GitHubRepoHomepage(target_uri.to_string()));
+    if github::is_github_repo_homepage(&target_str) {
+        return Err(ProxyError::GitHubRepoHomepage(target_str));
     }
 
     Ok(target_uri)
@@ -451,7 +470,7 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
-            .unwrap();
+            .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
     // Get the Host header for proxy URL generation
@@ -503,14 +522,15 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         Ok(uri) => uri,
         Err(_) => {
             warn!("Path is not a valid proxy target (404 Not Found): {}", path);
+            let error_msg = format!(
+                "404 Not Found\n\nThe path '{}' is not a valid proxy target.\n\nSupported formats:\n- https://github.com/owner/repo/...\n- https://raw.githubusercontent.com/...\n- http(s)://example.com/...\n",
+                path
+            );
             return Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(format!(
-                    "404 Not Found\n\nThe path '{}' is not a valid proxy target.\n\nSupported formats:\n- https://github.com/owner/repo/...\n- https://raw.githubusercontent.com/...\n- http(s)://example.com/...\n",
-                    path
-                )))
-                .unwrap();
+                .body(Body::from(error_msg))
+                .unwrap_or_else(|_| Response::new(Body::from("404 Not Found")));
         }
     };
 
@@ -876,6 +896,13 @@ fn is_response_needs_text_processing(
     false
 }
 
+fn sanitize_request_headers(headers: &mut HeaderMap, disable_compression: bool) {
+    if disable_compression {
+        // Remove compression-related headers from the request
+        headers.remove(header::ACCEPT_ENCODING);
+    }
+}
+
 fn sanitize_response_headers(
     headers: &mut HeaderMap,
     body_replaced: bool,
@@ -911,26 +938,6 @@ fn sanitize_response_headers(
 
     // IMPORTANT: Keep Location header for redirects (3xx responses)
     // The Location header should be preserved as-is for proper redirect handling
-}
-
-fn sanitize_request_headers(headers: &mut HeaderMap, disable_compression: bool) {
-    // Remove hop-by-hop headers
-    headers.remove(header::CONNECTION);
-    headers.remove(header::PROXY_AUTHENTICATE);
-    headers.remove(header::PROXY_AUTHORIZATION);
-    headers.remove(header::TE);
-    headers.remove(header::TRAILER);
-    headers.remove(header::TRANSFER_ENCODING);
-    headers.remove(header::UPGRADE);
-    headers.remove("keep-alive");
-
-    if disable_compression {
-        headers.remove(header::ACCEPT_ENCODING);
-        headers.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_static("identity"),
-        );
-    }
 }
 
 fn processor_proxy_url(processor: &Option<ResponsePostProcessor>) -> Option<&str> {
@@ -1061,6 +1068,7 @@ fn apply_github_headers(headers: &mut HeaderMap, auth: &AuthConfig) {
     }
 }
 
+/// Build CORS layer based on security configuration
 fn setup_tracing(log_config: &config::LogConfig) {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 

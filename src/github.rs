@@ -51,7 +51,7 @@ pub async fn github_proxy(
                     Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
                         .body(Body::from("Internal Server Error"))
-                        .unwrap()
+                        .unwrap_or_else(|_| Response::new(Body::from("Internal Server Error")))
                 });
             Ok(response)
         }
@@ -129,6 +129,51 @@ pub fn convert_github_blob_to_raw(url: &str) -> String {
     }
 
     url.to_string()
+}
+
+/// Check if URL is a non-downloadable GitHub web page path
+/// These paths return HTML pages that should not be proxied as file downloads
+pub fn is_github_web_only_path(url: &str) -> bool {
+    // Paths that are web pages, not file downloads:
+    // - /pkgs/container/... (package pages)
+    // - /releases/... (releases page)
+    // - /actions/... (GitHub Actions)
+    // - /settings/... (repository settings)
+    // - /security/... (security settings)
+    // - /projects/... (project boards)
+    // - /wiki/... (wiki pages)
+    // - /discussions/... (discussions)
+    // - /issues/... (issues page)
+    // - /pulls/... (pull requests page)
+    // - /search (search results)
+
+    let web_only_patterns = [
+        "/pkgs/",
+        "/releases/",
+        "/actions/",
+        "/settings/",
+        "/security/",
+        "/projects/",
+        "/wiki/",
+        "/discussions/",
+        "/issues",
+        "/pulls",
+        "/search",
+        "/notifications",
+        "/network",
+        "/graphs",
+        "/deployments",
+        "/branches",
+        "/tags",
+    ];
+
+    for pattern in &web_only_patterns {
+        if url.contains(pattern) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Check if URL is a GitHub repository homepage

@@ -1,7 +1,6 @@
-// Error handling utilities for common operations
-// Provides safe alternatives to unwrap() with proper logging and recovery
-// These functions are part of the public utility library and may be unused in the current
-// crate but are available for external use and testing
+// Comprehensive error handling module
+// Provides error context, recovery mechanisms, and safe error response building
+// Combines utilities for handling errors with proper logging and fallbacks
 
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
@@ -9,6 +8,10 @@ use hyper::header;
 use std::fs;
 use std::path::Path;
 use tracing::{error, warn};
+
+// ============================================================================
+// Basic File and Response Utilities
+// ============================================================================
 
 /// Safely read a binary file and return contents or empty bytes with logging
 pub fn read_file_bytes_or_empty<P: AsRef<Path>>(path: P) -> Vec<u8> {
@@ -40,6 +43,6 @@ pub fn build_response(status: StatusCode, content_type: &str, body: String) -> R
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
                 .body(Body::from("Internal Server Error"))
-                .unwrap()
+                .unwrap_or_else(|_| Response::new(Body::from("Internal Server Error")))
         })
 }

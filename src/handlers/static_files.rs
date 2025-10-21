@@ -56,7 +56,7 @@ pub async fn serve_static_file(uri: Uri) -> Response<Body> {
                 Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .body(Body::empty())
-                    .unwrap()
+                    .unwrap_or_else(|_| Response::new(Body::empty()))
             })
     }
 }
@@ -76,7 +76,7 @@ pub async fn serve_favicon() -> Response<Body> {
                 Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .body(Body::empty())
-                    .unwrap()
+                    .unwrap_or_else(|_| Response::new(Body::empty()))
             })
     } else {
         Response::builder()
@@ -90,7 +90,7 @@ pub async fn serve_favicon() -> Response<Body> {
                 Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .body(Body::empty())
-                    .unwrap()
+                    .unwrap_or_else(|_| Response::new(Body::empty()))
             })
     }
 }

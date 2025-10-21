@@ -48,6 +48,8 @@ impl Settings {
 
     pub fn validate(&mut self) -> Result<(), ConfigError> {
         self.server.finalize();
+        self.server.validate()?;
+        self.log.validate()?;
         Ok(())
     }
 }
@@ -80,6 +82,30 @@ impl ServerConfig {
 
     pub fn bind_addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// Validate server configuration
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        // Port must be in valid range
+        if self.port == 0 {
+            return Err(ConfigError::Validation(
+                "server.port cannot be 0".to_string(),
+            ));
+        }
+
+        // Size limit should be reasonable (at least 1 MB, at most 10 GB)
+        if self.size_limit == 0 {
+            return Err(ConfigError::Validation(
+                "server.sizeLimit must be at least 1 MB".to_string(),
+            ));
+        }
+        if self.size_limit > 10240 {
+            return Err(ConfigError::Validation(
+                "server.sizeLimit cannot exceed 10240 MB (10 GB)".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -128,6 +154,34 @@ impl LogConfig {
 
     pub fn get_level(&self) -> &str {
         &self.level
+    }
+
+    /// Validate log configuration
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        // Log level should be valid
+        match self.level.to_lowercase().as_str() {
+            "debug" | "info" | "warn" | "error" | "trace" | "none" => {}
+            _ => {
+                return Err(ConfigError::Validation(format!(
+                    "Invalid log level '{}'. Valid values: debug, info, warn, error, trace, none",
+                    self.level
+                )));
+            }
+        }
+
+        // Max log size should be reasonable (1MB to 1GB)
+        if self.max_log_size == 0 {
+            return Err(ConfigError::Validation(
+                "log.maxLogSize must be at least 1 MB".to_string(),
+            ));
+        }
+        if self.max_log_size > 1024 {
+            return Err(ConfigError::Validation(
+                "log.maxLogSize cannot exceed 1024 MB (1 GB)".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
