@@ -292,7 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/metrics", get(handlers::metrics::metrics_prometheus))
         .route("/metrics/json", get(handlers::metrics::metrics_json))
         .route("/style.css", get(handlers::static_files::serve_static_file))
-        .route("/app.js", get(handlers::static_files::serve_static_file))
+        .route("/script.js", get(handlers::static_files::serve_static_file))
         .route("/favicon.ico", get(handlers::static_files::serve_favicon))
         .route("/api/config", get(api::get_config))
         .route("/github/{*path}", any(github::github_proxy))

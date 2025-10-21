@@ -134,9 +134,14 @@ pub fn convert_github_blob_to_raw(url: &str) -> String {
 /// Check if URL is a non-downloadable GitHub web page path
 /// These paths return HTML pages that should not be proxied as file downloads
 pub fn is_github_web_only_path(url: &str) -> bool {
+    // API paths (api.github.com) should NOT be blocked - they are data endpoints
+    if url.contains("api.github.com") {
+        return false;
+    }
+
     // Paths that are web pages, not file downloads:
     // - /pkgs/container/... (package pages)
-    // - /releases/... (releases page)
+    // - /releases/... (releases page, but NOT /releases/download/)
     // - /actions/... (GitHub Actions)
     // - /settings/... (repository settings)
     // - /security/... (security settings)
@@ -146,6 +151,11 @@ pub fn is_github_web_only_path(url: &str) -> bool {
     // - /issues/... (issues page)
     // - /pulls/... (pull requests page)
     // - /search (search results)
+
+    // Check for /releases/download/ first - this is a file download, not a web page
+    if url.contains("/releases/download/") {
+        return false;
+    }
 
     let web_only_patterns = [
         "/pkgs/",
@@ -181,12 +191,17 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
     // Match patterns like:
     // - https://github.com/owner/repo
     // - https://github.com/owner/repo/
-    // - https://api.github.com/owner/repo
     // - https://custom.github.com/owner/repo
     // But NOT:
     // - https://github.com/owner/repo/blob/...
     // - https://github.com/owner/repo/raw/...
     // - https://github.com/owner/repo/tree/...
+    // - https://api.github.com/repos/... (API endpoints)
+
+    // API paths (api.github.com) are never repository homepages
+    if url.contains("api.github.com") {
+        return false;
+    }
 
     // Check if URL contains any GitHub domain
     let github_domain_check = url.contains("github.com")

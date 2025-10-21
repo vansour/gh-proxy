@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile optimization
 # Stage 1: Build stage - compile Rust binary
-FROM docker.io/rust:trixie as builder
+FROM docker.io/rust:trixie AS builder
 
 WORKDIR /app
 
