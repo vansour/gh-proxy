@@ -1,6 +1,5 @@
 /// Static file and content caching with lazy initialization
 /// Reduces disk I/O by caching frequently accessed files in memory
-
 use std::sync::OnceLock;
 
 static INDEX_HTML: OnceLock<String> = OnceLock::new();
@@ -22,10 +21,9 @@ fn calculate_etag(data: &[u8]) -> String {
 
 /// Get cached index.html content, loading from disk on first access
 pub fn get_index_html() -> &'static String {
-    INDEX_HTML.get_or_init(|| {
-        match std::fs::read_to_string("/app/web/index.html") {
-            Ok(content) => content,
-            Err(_) => r#"<!DOCTYPE html>
+    INDEX_HTML.get_or_init(|| match std::fs::read_to_string("/app/web/index.html") {
+        Ok(content) => content,
+        Err(_) => r#"<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -36,8 +34,7 @@ pub fn get_index_html() -> &'static String {
     <p>Web UI not available. Please check the installation.</p>
 </body>
 </html>"#
-                .to_string(),
-        }
+            .to_string(),
     })
 }
 
@@ -51,11 +48,9 @@ pub fn get_index_html_etag() -> &'static String {
 
 /// Get cached favicon content, loading from disk on first access
 pub fn get_favicon() -> &'static Vec<u8> {
-    FAVICON_ICO.get_or_init(|| {
-        match std::fs::read("/app/web/favicon.ico") {
-            Ok(content) => content,
-            Err(_) => Vec::new(),
-        }
+    FAVICON_ICO.get_or_init(|| match std::fs::read("/app/web/favicon.ico") {
+        Ok(content) => content,
+        Err(_) => Vec::new(),
     })
 }
 

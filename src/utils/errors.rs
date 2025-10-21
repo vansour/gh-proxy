@@ -1,11 +1,11 @@
 // Error handling utilities for common operations
 // Provides safe alternatives to unwrap() with proper logging and recovery
 
-use std::fs;
-use std::path::Path;
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
 use hyper::header;
+use std::fs;
+use std::path::Path;
 use tracing::{error, warn};
 
 /// Safely read a file and return its contents or a default value with logging
@@ -40,17 +40,16 @@ pub fn read_file_bytes_or_empty<P: AsRef<Path>>(path: P) -> Vec<u8> {
 }
 
 /// Safely build an HTTP response with proper error handling
-pub fn build_response(
-    status: StatusCode,
-    content_type: &str,
-    body: String,
-) -> Response<Body> {
+pub fn build_response(status: StatusCode, content_type: &str, body: String) -> Response<Body> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type)
         .body(Body::from(body))
         .unwrap_or_else(|e| {
-            error!("Failed to build HTTP response: {}. Returning INTERNAL_SERVER_ERROR.", e);
+            error!(
+                "Failed to build HTTP response: {}. Returning INTERNAL_SERVER_ERROR.",
+                e
+            );
             Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -61,10 +60,7 @@ pub fn build_response(
 
 /// Safely parse string to a specific type with logging
 #[allow(dead_code)]
-pub fn parse_with_default<T: std::str::FromStr + Default>(
-    input: &str,
-    context: &str,
-) -> T {
+pub fn parse_with_default<T: std::str::FromStr + Default>(input: &str, context: &str) -> T {
     match input.parse::<T>() {
         Ok(value) => value,
         Err(_) => {

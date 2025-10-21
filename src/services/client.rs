@@ -1,6 +1,5 @@
 /// HTTP client builder and configuration
 /// Creates and configures the hyper HTTP client with TLS support
-
 use axum::body::Body;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -10,7 +9,7 @@ use hyper_util::rt::TokioExecutor;
 use crate::config::ServerConfig;
 
 /// Build a configured HTTP client with connection pooling and TLS
-/// 
+///
 /// Configuration details:
 /// - TCP_NODELAY: Enabled for reduced latency on small packets
 /// - Connection timeout: 30 seconds
@@ -23,7 +22,7 @@ pub fn build_client(
 
     // Enable TCP_NODELAY to reduce latency for small packets
     http_connector.set_nodelay(true);
-    
+
     // Set connection timeout to 30 seconds
     http_connector.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
 

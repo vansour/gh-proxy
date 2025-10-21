@@ -1,8 +1,7 @@
+use crate::utils::regex as regex_utils;
 /// URL and proxy handling utilities
 /// Provides URL validation, transformation, and proxy URL rewriting
-
 use regex::Captures;
-use crate::utils::regex as regex_utils;
 
 /// Add proxy URL prefix to GitHub URLs in plain text
 pub fn add_proxy_to_github_urls(content: &str, proxy_url: &str) -> String {
@@ -93,7 +92,9 @@ mod tests {
         let result = add_proxy_to_github_urls(input, "https://proxy.com");
         // Should not double-proxy
         assert_eq!(
-            result.matches("https://proxy.com/https://github.com").count(),
+            result
+                .matches("https://proxy.com/https://github.com")
+                .count(),
             1
         );
     }

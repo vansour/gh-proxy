@@ -1,8 +1,8 @@
 // Centralized regex pattern management with lazy initialization
 // This ensures regex patterns are compiled only once and reused across requests
 
-use std::sync::OnceLock;
 use regex::Regex;
+use std::sync::OnceLock;
 
 static RAW_PATTERN: OnceLock<Regex> = OnceLock::new();
 static GITHUB_PATTERN: OnceLock<Regex> = OnceLock::new();

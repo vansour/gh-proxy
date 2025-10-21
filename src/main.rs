@@ -21,11 +21,11 @@ use tracing::{debug, error, info, instrument, warn};
 mod api;
 mod config;
 mod github;
+mod handlers;
 mod metrics;
+mod services;
 mod shutdown;
 mod utils;
-mod handlers;
-mod services;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -997,7 +997,9 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
                 match String::from_utf8(fixed_bytes.clone()) {
                     Ok(text) => {
                         debug!("Recovered from UTF-8 error with byte fixing");
-                        return Ok(utils::url::add_proxy_to_github_urls(&text, proxy_url).into_bytes());
+                        return Ok(
+                            utils::url::add_proxy_to_github_urls(&text, proxy_url).into_bytes()
+                        );
                     }
                     Err(e) => {
                         let invalid_pos = e.utf8_error().valid_up_to();
@@ -1006,9 +1008,11 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
                             warn!(
                                 "Cannot fully recover shell script UTF-8, using lossy conversion"
                             );
-                            return Ok(
-                                utils::url::add_proxy_to_github_urls(&lossy_text, proxy_url).into_bytes()
-                            );
+                            return Ok(utils::url::add_proxy_to_github_urls(
+                                &lossy_text,
+                                proxy_url,
+                            )
+                            .into_bytes());
                         }
                         fixed_bytes[invalid_pos] = b'?';
                     }

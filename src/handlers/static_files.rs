@@ -1,6 +1,5 @@
 /// Static file serving handlers
 /// Handles serving of HTML, CSS, JavaScript, and favicon files
-
 use axum::{
     body::Body,
     http::{Response, StatusCode, Uri},

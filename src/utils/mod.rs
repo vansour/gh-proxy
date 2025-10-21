@@ -1,4 +1,4 @@
-pub mod regex;
-pub mod errors;
-pub mod url;
 pub mod cache;
+pub mod errors;
+pub mod regex;
+pub mod url;
