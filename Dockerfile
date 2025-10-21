@@ -6,12 +6,9 @@ COPY src ./src
 COPY config ./config
 RUN cargo build --release
 
-FROM docker.io/debian:trixie-slim
+FROM docker.io/debian:trixie
 
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    curl \
- && rm -rf /var/lib/apt/lists/*
+RUN apt -y update && apt -y upgrade && apt -y full-upgrade && apt -y autoremove && apt -y install wget curl jq sudo vim apt-transport-https ca-certificates cron unzip git gpg e2fsprogs dnsutils iproute2 iputils-ping
 
 WORKDIR /app
 RUN mkdir -p /app/logs /app/.defaults/config
