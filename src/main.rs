@@ -7,14 +7,12 @@ use axum::{
     routing::{any, get},
     Router,
 };
-use config::{AuthConfig, GitHubConfig, ServerConfig, Settings};
+use config::{AuthConfig, GitHubConfig, Settings};
 use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, header};
-use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use tokio::signal;
 use tokio::sync::OnceCell;
 use tower_http::cors::{Any, CorsLayer};
@@ -25,7 +23,9 @@ mod config;
 mod github;
 mod metrics;
 mod shutdown;
-mod stream_proxy;
+mod utils;
+mod handlers;
+mod services;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -228,7 +228,7 @@ fn error_response(error: ProxyError) -> Response<Body> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::load()?;
 
     // Setup tracing with log configuration
@@ -247,7 +247,7 @@ async fn main() -> anyhow::Result<()> {
     info!("CORS: Enabled (allowing all origins)");
 
     let bind_addr: SocketAddr = settings.server.bind_addr().parse()?;
-    let client = build_client(&settings.server);
+    let client = services::client::build_client(&settings.server);
 
     let github_config = GitHubConfig::new(&settings.auth.token);
 
@@ -274,14 +274,14 @@ async fn main() -> anyhow::Result<()> {
         .expose_headers(Any); // 暴露所有响应头
 
     let app = Router::new()
-        .route("/", get(index))
-        .route("/healthz", get(health_liveness))
-        .route("/readyz", get(health_readiness))
-        .route("/metrics", get(metrics_prometheus))
-        .route("/metrics/json", get(metrics_json))
-        .route("/style.css", get(serve_static_file))
-        .route("/app.js", get(serve_static_file))
-        .route("/favicon.ico", get(serve_favicon))
+        .route("/", get(handlers::static_files::index))
+        .route("/healthz", get(handlers::health::health_liveness))
+        .route("/readyz", get(handlers::health::health_readiness))
+        .route("/metrics", get(handlers::metrics::metrics_prometheus))
+        .route("/metrics/json", get(handlers::metrics::metrics_json))
+        .route("/style.css", get(handlers::static_files::serve_static_file))
+        .route("/app.js", get(handlers::static_files::serve_static_file))
+        .route("/favicon.ico", get(handlers::static_files::serve_favicon))
         .route("/api/config", get(api::get_config))
         .route("/github/{*path}", any(github::github_proxy))
         .fallback(fallback_proxy)
@@ -316,33 +316,6 @@ async fn main() -> anyhow::Result<()> {
 
     info!("gh-proxy server shutting down gracefully");
     Ok(())
-}
-
-fn build_client(
-    _server: &ServerConfig,
-) -> Client<hyper_rustls::HttpsConnector<HttpConnector>, Body> {
-    let mut http_connector = HttpConnector::new();
-
-    // Enable TCP_NODELAY to reduce latency for small packets
-    http_connector.set_nodelay(true);
-    // Set connection timeout to 30 seconds
-    http_connector.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
-
-    // Enable both IPv4 and IPv6 with support for dual-stack
-    http_connector.enforce_http(false);
-
-    // Configure HTTPS connector with modern TLS settings
-    let connector = HttpsConnectorBuilder::new()
-        .with_webpki_roots()
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .wrap_connector(http_connector);
-
-    // Build client with default settings
-    Client::builder(TokioExecutor::new())
-        .http2_only(false) // Support both HTTP/1.1 and HTTP/2
-        .build(connector)
 }
 
 async fn shutdown_signal(shutdown_mgr: shutdown::ShutdownManager) {
@@ -397,176 +370,6 @@ async fn shutdown_signal(shutdown_mgr: shutdown::ShutdownManager) {
 
     // Mark server as stopped
     shutdown_mgr.mark_stopped().await;
-}
-
-async fn index() -> impl axum::response::IntoResponse {
-    let html = std::fs::read_to_string("/app/web/index.html").unwrap_or_else(|_| {
-        r#"<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>gh-proxy</title>
-</head>
-<body>
-    <h1>gh-proxy - GitHub Proxy</h1>
-    <p>Web UI not available. Please check the installation.</p>
-</body>
-</html>"#
-            .to_string()
-    });
-
-    // Set Content-Type with UTF-8 charset explicitly
-    (
-        [(hyper::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        html,
-    )
-}
-
-async fn serve_static_file(uri: axum::http::Uri) -> Response<Body> {
-    let path = uri.path().trim_start_matches('/');
-    let file_path = format!("/app/web/{}", path);
-
-    let content_type = match path {
-        "style.css" => "text/css; charset=utf-8",
-        "app.js" => "application/javascript; charset=utf-8",
-        _ => "text/plain; charset=utf-8",
-    };
-
-    match std::fs::read(&file_path) {
-        Ok(content) => Response::builder()
-            .status(StatusCode::OK)
-            .header(hyper::header::CONTENT_TYPE, content_type)
-            .body(Body::from(content))
-            .unwrap(),
-        Err(_) => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from("File not found"))
-            .unwrap(),
-    }
-}
-
-async fn serve_favicon() -> Response<Body> {
-    let file_path = "/app/web/favicon.ico";
-
-    match std::fs::read(file_path) {
-        Ok(content) => {
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(hyper::header::CONTENT_TYPE, "image/x-icon")
-                .header("Cache-Control", "public, max-age=31536000") // Cache for 1 year
-                .body(Body::from(content))
-                .unwrap()
-        }
-        Err(_) => {
-            // Return a minimal 1x1 transparent ICO if file not found
-            Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header(hyper::header::CONTENT_TYPE, "image/x-icon")
-                .body(Body::empty())
-                .unwrap()
-        }
-    }
-}
-
-async fn health_liveness(
-    State(state): State<AppState>,
-) -> (StatusCode, axum::Json<shutdown::HealthStatus>) {
-    let is_alive = state.shutdown_manager.is_alive().await;
-    let status = shutdown::HealthStatus {
-        state: format!("{:?}", state.shutdown_manager.get_state().await),
-        active_requests: state.shutdown_manager.get_active_requests(),
-        uptime_secs: state.uptime_tracker.uptime_secs(),
-        accepting_requests: state.shutdown_manager.should_accept_request(),
-    };
-
-    let status_code = if is_alive {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-
-    (status_code, axum::Json(status))
-}
-
-async fn health_readiness(
-    State(state): State<AppState>,
-) -> (StatusCode, axum::Json<shutdown::HealthStatus>) {
-    let is_ready = state.shutdown_manager.is_ready().await;
-    let status = shutdown::HealthStatus {
-        state: format!("{:?}", state.shutdown_manager.get_state().await),
-        active_requests: state.shutdown_manager.get_active_requests(),
-        uptime_secs: state.uptime_tracker.uptime_secs(),
-        accepting_requests: state.shutdown_manager.should_accept_request(),
-    };
-
-    let status_code = if is_ready {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-
-    (status_code, axum::Json(status))
-}
-
-/// GET /metrics - Prometheus metrics endpoint
-async fn metrics_prometheus(State(state): State<AppState>) -> (StatusCode, String) {
-    let prometheus_metrics = state.metrics.as_prometheus_metrics();
-    (StatusCode::OK, prometheus_metrics)
-}
-
-/// GET /metrics/json - JSON metrics endpoint
-async fn metrics_json(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
-    axum::Json(state.metrics.as_json())
-}
-
-/// Load blacklist lazily (only once, on first use)
-async fn load_blacklist_lazy(state: &AppState) -> &Vec<String> {
-    state
-        .blacklist_cache
-        .get_or_init(|| async {
-            match state.settings.blacklist.load_blacklist() {
-                Ok(list) => {
-                    info!("Loaded {} blacklist entries (lazy)", list.len());
-                    list
-                }
-                Err(e) => {
-                    warn!("Failed to load blacklist: {}", e);
-                    Vec::new()
-                }
-            }
-        })
-        .await
-}
-
-/// Check if an IP matches any blacklist rule
-fn is_ip_blacklisted(ip: &str, blacklist: &[String]) -> bool {
-    use config::BlacklistConfig;
-
-    for rule in blacklist.iter() {
-        if BlacklistConfig::ip_matches_rule(ip, rule) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Check if the client IP is blacklisted
-async fn check_blacklist(state: &AppState, client_ip: Option<String>) -> ProxyResult<()> {
-    if !state.settings.blacklist.enabled {
-        return Ok(());
-    }
-
-    if let Some(client_ip) = client_ip {
-        let blacklist = load_blacklist_lazy(state).await;
-
-        if is_ip_blacklisted(&client_ip, blacklist) {
-            warn!("Blocked request from blacklisted IP: {}", client_ip);
-            return Err(ProxyError::AccessDenied(client_ip));
-        }
-    }
-
-    Ok(())
 }
 
 /// Resolve the target URI for fallback proxy
@@ -688,10 +491,10 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
     let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
     info!("Proxy URL determined: {}", proxy_url);
 
-    let client_ip = extract_client_ip(&req);
+    let client_ip = services::request::extract_client_ip(&req);
 
     // Check blacklist (lazy loaded)
-    if let Err(error) = check_blacklist(&state, client_ip).await {
+    if let Err(error) = services::blacklist::check_blacklist(&state, client_ip).await {
         return error_response(error);
     }
 
@@ -736,93 +539,6 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
 
     info!("Fallback proxy success: status={}", response.status());
     response
-}
-
-fn add_proxy_to_github_urls(content: &str, proxy_url: &str) -> String {
-    use regex::Regex;
-
-    // proxy_url should already have the protocol (e.g., "https://example.com" or "http://example.com")
-    // If not, add https as default
-    let proxy_url = if proxy_url.starts_with("http://") || proxy_url.starts_with("https://") {
-        proxy_url.to_string()
-    } else {
-        format!("https://{}", proxy_url)
-    };
-
-    // Pattern 1: raw.githubusercontent.com URLs - match everything up to whitespace, quote, angle bracket
-    // Use character class to exclude problematic characters
-    let raw_pattern = Regex::new(r#"https?://raw\.githubusercontent\.com/[^\s"'<>]++"#).unwrap();
-
-    // Pattern 2: github.com URLs (various formats)
-    let github_pattern = Regex::new(r#"https?://github\.com/[^\s"'<>]++"#).unwrap();
-
-    // Replace all matching URLs
-    let mut result = content.to_string();
-
-    // Replace raw.githubusercontent.com URLs
-    result = raw_pattern
-        .replace_all(&result, |caps: &regex::Captures| {
-            let url = &caps[0];
-            if url.contains(&proxy_url) || url.contains("localhost") || url.contains("127.0.0.1") {
-                // Already proxied
-                url.to_string()
-            } else {
-                // Wrap with proxy URL
-                format!("{}/{}", proxy_url, url)
-            }
-        })
-        .to_string();
-
-    // Replace github.com URLs
-    result = github_pattern
-        .replace_all(&result, |caps: &regex::Captures| {
-            let url = &caps[0];
-            if url.contains(&proxy_url) || url.contains("localhost") || url.contains("127.0.0.1") {
-                // Already proxied
-                url.to_string()
-            } else {
-                // Wrap with proxy URL
-                format!("{}/{}", proxy_url, url)
-            }
-        })
-        .to_string();
-
-    result
-}
-
-fn add_proxy_to_html_urls(content: &str, proxy_url: &str) -> String {
-    use regex::Regex;
-
-    // proxy_url should already have the protocol (e.g., "https://example.com" or "http://example.com")
-    // If not, add https as default
-    let proxy_url = if proxy_url.starts_with("http://") || proxy_url.starts_with("https://") {
-        proxy_url.to_string()
-    } else {
-        format!("https://{}", proxy_url)
-    };
-
-    // Pattern for GitHub URLs in HTML (in href, src, data attributes, etc.)
-    // This will match both raw.githubusercontent.com and github.com URLs
-    let github_url_pattern =
-        Regex::new(r#"(https?://(raw\.githubusercontent\.com|github\.com)/[^\s"'<>]+)"#).unwrap();
-
-    let mut result = content.to_string();
-
-    // Replace all GitHub URLs with proxied versions
-    result = github_url_pattern
-        .replace_all(&result, |caps: &regex::Captures| {
-            let url = &caps[1];
-            if url.contains(&proxy_url) || url.contains("localhost") || url.contains("127.0.0.1") {
-                // Already proxied, don't double-proxy
-                url.to_string()
-            } else {
-                // Wrap with proxy URL
-                format!("{}/{}", proxy_url, url)
-            }
-        })
-        .to_string();
-
-    result
 }
 
 /// Core proxy request handler with streaming support
@@ -1272,7 +988,7 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
                 text.len(),
                 proxy_url
             );
-            Ok(add_proxy_to_github_urls(&text, proxy_url).into_bytes())
+            Ok(utils::url::add_proxy_to_github_urls(&text, proxy_url).into_bytes())
         }
         Err(_) => {
             let mut fixed_bytes = body_bytes;
@@ -1281,7 +997,7 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
                 match String::from_utf8(fixed_bytes.clone()) {
                     Ok(text) => {
                         debug!("Recovered from UTF-8 error with byte fixing");
-                        return Ok(add_proxy_to_github_urls(&text, proxy_url).into_bytes());
+                        return Ok(utils::url::add_proxy_to_github_urls(&text, proxy_url).into_bytes());
                     }
                     Err(e) => {
                         let invalid_pos = e.utf8_error().valid_up_to();
@@ -1291,7 +1007,7 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
                                 "Cannot fully recover shell script UTF-8, using lossy conversion"
                             );
                             return Ok(
-                                add_proxy_to_github_urls(&lossy_text, proxy_url).into_bytes()
+                                utils::url::add_proxy_to_github_urls(&lossy_text, proxy_url).into_bytes()
                             );
                         }
                         fixed_bytes[invalid_pos] = b'?';
@@ -1310,7 +1026,7 @@ fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, S
                 text.len(),
                 proxy_url
             );
-            Ok(add_proxy_to_html_urls(&text, proxy_url).into_bytes())
+            Ok(utils::url::add_proxy_to_html_urls(&text, proxy_url).into_bytes())
         }
         Err(e) => {
             warn!(
@@ -1339,30 +1055,6 @@ fn apply_github_headers(headers: &mut HeaderMap, auth: &AuthConfig) {
     if let Ok(value) = HeaderValue::from_str("application/vnd.github.v3+json") {
         headers.insert(header::ACCEPT, value);
     }
-}
-
-/// Extract client IP from request headers
-fn extract_client_ip(req: &Request<Body>) -> Option<String> {
-    // Try X-Forwarded-For header first (for proxied requests)
-    if let Some(xff) = req.headers().get("x-forwarded-for") {
-        if let Ok(xff_str) = xff.to_str() {
-            // Take the first IP in the chain
-            if let Some(ip) = xff_str.split(',').next() {
-                return Some(ip.trim().to_string());
-            }
-        }
-    }
-
-    // Try X-Real-IP header
-    if let Some(xri) = req.headers().get("x-real-ip") {
-        if let Ok(ip) = xri.to_str() {
-            return Some(ip.trim().to_string());
-        }
-    }
-
-    // TODO: Extract from connection info if available
-    // For now, return None if no headers present
-    None
 }
 
 fn setup_tracing(log_config: &config::LogConfig) {

@@ -42,11 +42,18 @@ pub async fn github_proxy(
                 - Direct GitHub URLs\n",
                 msg
             );
-            Ok(Response::builder()
+            let response = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
                 .body(Body::from(error_msg))
-                .unwrap())
+                .unwrap_or_else(|e| {
+                    error!("Failed to build GitHub error response: {}", e);
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Internal Server Error"))
+                        .unwrap()
+                });
+            Ok(response)
         }
         Err(err) => {
             error!("GitHub target resolution error: {}", err);

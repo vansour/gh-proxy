@@ -36,6 +36,10 @@ pub struct MetricsCollector {
     timeout_errors: Arc<AtomicU64>,
     size_exceeded_errors: Arc<AtomicU64>,
     access_denied_errors: Arc<AtomicU64>,
+
+    // Cache metrics (performance optimization tracking)
+    cache_hits: Arc<AtomicU64>,
+    cache_misses: Arc<AtomicU64>,
 }
 
 impl MetricsCollector {
@@ -54,6 +58,8 @@ impl MetricsCollector {
             timeout_errors: Arc::new(AtomicU64::new(0)),
             size_exceeded_errors: Arc::new(AtomicU64::new(0)),
             access_denied_errors: Arc::new(AtomicU64::new(0)),
+            cache_hits: Arc::new(AtomicU64::new(0)),
+            cache_misses: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -138,6 +144,30 @@ impl MetricsCollector {
         self.access_denied_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    // ==================== Cache metrics ====================
+
+    /// Record a cache hit (file found in cache)
+    pub fn record_cache_hit(&self) {
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a cache miss (file not in cache or cache not available)
+    pub fn record_cache_miss(&self) {
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get cache hit rate as percentage
+    pub fn get_cache_hit_rate(&self) -> f64 {
+        let hits = self.cache_hits.load(Ordering::Relaxed);
+        let misses = self.cache_misses.load(Ordering::Relaxed);
+        let total = hits + misses;
+        if total > 0 {
+            (hits as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+
     // ==================== Metrics retrieval ====================
 
     /// Get all metrics as Prometheus format string
@@ -219,7 +249,19 @@ impl MetricsCollector {
             \n\
             # HELP gh_proxy_access_denied_errors Access denied errors\n\
             # TYPE gh_proxy_access_denied_errors counter\n\
-            gh_proxy_access_denied_errors {}\n",
+            gh_proxy_access_denied_errors {}\n\
+            \n\
+            # HELP gh_proxy_cache_hits File cache hits\n\
+            # TYPE gh_proxy_cache_hits counter\n\
+            gh_proxy_cache_hits {}\n\
+            \n\
+            # HELP gh_proxy_cache_misses File cache misses\n\
+            # TYPE gh_proxy_cache_misses counter\n\
+            gh_proxy_cache_misses {}\n\
+            \n\
+            # HELP gh_proxy_cache_hit_rate Cache hit rate percentage\n\
+            # TYPE gh_proxy_cache_hit_rate gauge\n\
+            gh_proxy_cache_hit_rate {:.2}\n",
             total,
             successful,
             failed,
@@ -233,7 +275,10 @@ impl MetricsCollector {
             proxy_err,
             timeout_err,
             size_err,
-            access_err
+            access_err,
+            self.cache_hits.load(Ordering::Relaxed),
+            self.cache_misses.load(Ordering::Relaxed),
+            self.get_cache_hit_rate()
         )
     }
 
@@ -267,6 +312,11 @@ impl MetricsCollector {
                 "timeout": self.timeout_errors.load(Ordering::Relaxed),
                 "size_exceeded": self.size_exceeded_errors.load(Ordering::Relaxed),
                 "access_denied": self.access_denied_errors.load(Ordering::Relaxed)
+            },
+            "cache": {
+                "hits": self.cache_hits.load(Ordering::Relaxed),
+                "misses": self.cache_misses.load(Ordering::Relaxed),
+                "hit_rate_percent": self.get_cache_hit_rate()
             }
         })
     }

@@ -172,6 +172,7 @@ impl Clone for ShutdownManager {
 
 /// Health check information
 #[derive(Debug, Clone, serde::Serialize)]
+#[allow(dead_code)]
 pub struct HealthStatus {
     /// Server state (starting, ready, shutting_down, stopped)
     pub state: String,

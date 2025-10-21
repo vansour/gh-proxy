@@ -188,9 +188,16 @@ impl BlacklistConfig {
                     Ok(blacklist.rules)
                 } else {
                     // Fallback to old format (direct array)
-                    let list: Vec<String> =
-                        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
-                    Ok(list)
+                    match serde_json::from_str::<Vec<String>>(&content) {
+                        Ok(list) => Ok(list),
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to parse blacklist file '{}': {}. Using empty blacklist.",
+                                self.blacklist_file, e
+                            );
+                            Ok(Vec::new())
+                        }
+                    }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
