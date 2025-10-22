@@ -1,4 +1,10 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use axum::{
     body::Body,
@@ -7,8 +13,9 @@ use axum::{
     routing::{any, get},
     Router,
 };
+use bytes::Bytes;
 use config::{AuthConfig, GitHubConfig, Settings};
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, header};
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -828,31 +835,16 @@ pub async fn proxy_request(
         return Ok(response);
     }
 
-    if let Some(length) = content_length {
-        sanitize_response_headers(&mut parts.headers, false, false, false);
-        let response = Response::from_parts(parts, Body::from_stream(body.into_data_stream()));
-        lifecycle.success(length);
-        return Ok(response);
-    }
+    sanitize_response_headers(&mut parts.headers, false, false, false);
 
-    let body_bytes = match collect_body_with_limit(body, size_limit_mb).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            lifecycle.fail(Some(&err));
-            return Err(err);
-        }
-    };
+    let streaming_body = ProxyBodyStream::new(
+        body.into_data_stream().boxed(),
+        lifecycle,
+        size_limit_bytes,
+        size_limit_mb,
+    );
 
-    sanitize_response_headers(&mut parts.headers, true, false, false);
-    let content_length_value = HeaderValue::from_str(&body_bytes.len().to_string())
-        .unwrap_or_else(|_| HeaderValue::from_static("0"));
-    parts
-        .headers
-        .insert(hyper::header::CONTENT_LENGTH, content_length_value);
-
-    let bytes_sent = body_bytes.len() as u64;
-    let response = Response::from_parts(parts, Body::from(body_bytes));
-    lifecycle.success(bytes_sent);
+    let response = Response::from_parts(parts, Body::from_stream(streaming_body));
     Ok(response)
 }
 
@@ -957,6 +949,78 @@ fn is_html_like(content_type: &Option<String>, target_uri: &Uri) -> bool {
 
     let path = target_uri.path().to_lowercase();
     path.ends_with(".html") || path.ends_with(".htm")
+}
+
+type BoxedBodyStream = Pin<Box<dyn Stream<Item = Result<Bytes, hyper::Error>> + Send>>;
+
+struct ProxyBodyStream {
+    inner: BoxedBodyStream,
+    lifecycle: Option<RequestLifecycle>,
+    size_limit_bytes: u64,
+    size_limit_mb: u64,
+    total_bytes: u64,
+}
+
+impl ProxyBodyStream {
+    fn new(
+        inner: BoxedBodyStream,
+        lifecycle: RequestLifecycle,
+        size_limit_bytes: u64,
+        size_limit_mb: u64,
+    ) -> Self {
+        Self {
+            inner,
+            lifecycle: Some(lifecycle),
+            size_limit_bytes,
+            size_limit_mb,
+            total_bytes: 0,
+        }
+    }
+}
+
+impl Stream for ProxyBodyStream {
+    type Item = Result<Bytes, ProxyError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                let chunk_len = chunk.len() as u64;
+                let new_total = this.total_bytes.saturating_add(chunk_len);
+
+                if this.size_limit_bytes > 0 && new_total > this.size_limit_bytes {
+                    let size_mb = std::cmp::max(1, new_total / 1024 / 1024);
+                    warn!(
+                        "Streaming body exceeded limit: {} bytes ({} MB) > {} MB",
+                        new_total, size_mb, this.size_limit_mb
+                    );
+                    let error = ProxyError::SizeExceeded(size_mb, this.size_limit_mb);
+                    if let Some(mut lifecycle) = this.lifecycle.take() {
+                        lifecycle.fail(Some(&error));
+                    }
+                    return Poll::Ready(Some(Err(error)));
+                }
+
+                this.total_bytes = new_total;
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(Err(e))) => {
+                error!("Failed to read response body: {}", e);
+                let error = ProxyError::Http(Box::new(e));
+                if let Some(mut lifecycle) = this.lifecycle.take() {
+                    lifecycle.fail(Some(&error));
+                }
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                if let Some(mut lifecycle) = this.lifecycle.take() {
+                    lifecycle.success(this.total_bytes);
+                }
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 async fn collect_body_with_limit(body: Incoming, size_limit_mb: u64) -> ProxyResult<Vec<u8>> {

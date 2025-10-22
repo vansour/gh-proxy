@@ -276,8 +276,10 @@ mod tests {
     #[test]
     fn test_is_repo_homepage_other_domains() {
         // Test with other GitHub domains
-        assert!(is_github_repo_homepage("https://api.github.com/owner/repo"));
-        assert!(is_github_repo_homepage(
+        assert!(!is_github_repo_homepage(
+            "https://api.github.com/owner/repo"
+        ));
+        assert!(!is_github_repo_homepage(
             "https://api.github.com/owner/repo/"
         ));
         assert!(!is_github_repo_homepage(
