@@ -24,13 +24,6 @@ function generateOutput(userInput, format) {
     let normalizedLink = userInput.trim();
 
     try {
-        if (format === 'docker') {
-            if (normalizedLink.includes('/') && !normalizedLink.includes(' ') && !normalizedLink.startsWith('http')) {
-                return { link: `docker pull ${host}/${normalizedLink}`, isUrl: false };
-            }
-            return { error: '请输入有效的 Docker 镜像名 (例如: owner/repo)' };
-        }
-        
         if (!/^https?:\/\//i.test(normalizedLink)) {
             normalizedLink = 'https://' + normalizedLink;
         }
@@ -47,6 +40,8 @@ function generateOutput(userInput, format) {
                 return { error: 'Git Clone 需要以 .git 结尾的仓库链接' };
             case 'wget':
                 return { link: `wget "${directLink}"`, isUrl: false };
+            case 'curl':
+                return { link: `curl -O "${directLink}"`, isUrl: false };
             case 'direct':
             default:
                 return { link: directLink, isUrl: true };
@@ -120,14 +115,89 @@ githubLinkInput.addEventListener('input', () => {
 });
 
 copyButton.addEventListener('click', function () {
-    if (!formattedLinkOutput.textContent) return;
-    navigator.clipboard.writeText(formattedLinkOutput.textContent).then(() => {
-        showToast('已复制到剪贴板');
-    }).catch(err => {
-        console.error('复制失败: ', err);
-        showToast('复制失败');
-    });
+    const textToCopy = formattedLinkOutput.textContent;
+    if (!textToCopy) return;
+    
+    // 方案 1: 使用 Clipboard API (HTTPS)
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(textToCopy)
+            .then(() => {
+                showToast('已复制到剪贴板');
+            })
+            .catch(() => {
+                // 降级到 execCommand
+                copyViaExecCommand(textToCopy);
+            });
+    } else {
+        // 方案 2: 使用 execCommand (HTTP 兼容)
+        copyViaExecCommand(textToCopy);
+    }
 });
+
+function copyViaExecCommand(text) {
+    // 创建一个临时的 textarea 元素
+    const textarea = document.createElement('textarea');
+    
+    // 设置样式使其不可见但可交互
+    textarea.style.position = 'fixed';
+    textarea.style.top = '0';
+    textarea.style.left = '0';
+    textarea.style.width = '2em';
+    textarea.style.height = '2em';
+    textarea.style.padding = '0';
+    textarea.style.border = 'none';
+    textarea.style.outline = 'none';
+    textarea.style.boxShadow = 'none';
+    textarea.style.background = 'transparent';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    textarea.style.zIndex = '-9999';
+    
+    // 禁用自动缩放（移动设备）
+    textarea.style.fontSize = '16px';
+    textarea.style.lineHeight = '1';
+    
+    // 设置文本内容
+    textarea.value = text;
+    
+    // 添加到 DOM
+    document.body.appendChild(textarea);
+    
+    // 确保 textarea 获得焦点
+    textarea.focus();
+    
+    try {
+        // 使用 setSelectionRange 确保能够选择文本
+        textarea.setSelectionRange(0, textarea.value.length);
+        
+        // 执行复制命令
+        const successful = document.execCommand('copy');
+        
+        console.log('Copy command result:', successful);
+        
+        if (successful) {
+            showToast('已复制到剪贴板');
+        } else {
+            console.warn('execCommand 返回 false，尝试备用方案');
+            // 尝试备用方案：直接 select 后再复制
+            textarea.select();
+            const retrySuccessful = document.execCommand('copy');
+            if (retrySuccessful) {
+                showToast('已复制到剪贴板');
+            } else {
+                showToast('复制失败');
+            }
+        }
+    } catch (err) {
+        console.error('复制错误: ', err);
+        showToast('复制失败，请手动复制');
+    } finally {
+        // 移除 textarea 元素
+        if (textarea.parentNode) {
+            document.body.removeChild(textarea);
+        }
+    }
+}
 
 openButton.addEventListener('click', function () {
     if (!openButton.disabled) {
