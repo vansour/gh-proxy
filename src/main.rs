@@ -837,6 +837,9 @@ pub async fn proxy_request(
 
     sanitize_response_headers(&mut parts.headers, false, false, false);
 
+    // Fix Content-Type for common file extensions if it's missing or incorrect
+    fix_content_type_header(&mut parts.headers, &target_uri);
+
     let streaming_body = ProxyBodyStream::new(
         body.into_data_stream().boxed(),
         lifecycle,
@@ -930,6 +933,49 @@ fn sanitize_response_headers(
 
     // IMPORTANT: Keep Location header for redirects (3xx responses)
     // The Location header should be preserved as-is for proper redirect handling
+}
+
+fn fix_content_type_header(headers: &mut HeaderMap, target_uri: &Uri) {
+    let path = target_uri.path();
+    let content_type = headers.get(header::CONTENT_TYPE);
+
+    // If Content-Type is already set and not text/plain, don't override
+    if let Some(ct) = content_type {
+        if let Ok(ct_str) = ct.to_str() {
+            if !ct_str.to_lowercase().starts_with("text/plain") {
+                return;
+            }
+        }
+    }
+
+    // Determine MIME type based on file extension
+    let mime_type = if path.ends_with(".js") || path.ends_with(".mjs") {
+        "application/javascript; charset=utf-8"
+    } else if path.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if path.ends_with(".html") || path.ends_with(".htm") {
+        "text/html; charset=utf-8"
+    } else if path.ends_with(".json") {
+        "application/json; charset=utf-8"
+    } else if path.ends_with(".xml") {
+        "application/xml; charset=utf-8"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if path.ends_with(".gif") {
+        "image/gif"
+    } else if path.ends_with(".webp") {
+        "image/webp"
+    } else if path.ends_with(".ico") {
+        "image/x-icon"
+    } else {
+        return; // Don't set if we can't determine
+    };
+
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
 }
 
 fn processor_proxy_url(processor: &Option<ResponsePostProcessor>) -> Option<&str> {

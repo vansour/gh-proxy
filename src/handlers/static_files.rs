@@ -26,14 +26,14 @@ pub async fn index() -> impl axum::response::IntoResponse {
     )
 }
 
-/// GET /style.css, /app.js - Serve static files
+/// GET /style.css - Serve static files
 pub async fn serve_static_file(uri: Uri) -> Response<Body> {
     let path = uri.path().trim_start_matches('/');
     let file_path = format!("/app/web/{}", path);
 
     let content_type = match path {
         "style.css" => "text/css; charset=utf-8",
-        "app.js" => "application/javascript; charset=utf-8",
+        "script.js" => "application/javascript; charset=utf-8",
         _ => "text/plain; charset=utf-8",
     };
 
