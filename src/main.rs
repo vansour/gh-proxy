@@ -7,19 +7,19 @@ use std::{
 };
 
 use axum::{
+    Router,
     body::Body,
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
     routing::{any, get},
-    Router,
 };
 use bytes::Bytes;
 use config::{AuthConfig, GitHubConfig, Settings};
 use futures_util::{Stream, StreamExt};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, header};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
 use tokio::signal;
 use tokio::sync::OnceCell;
 use tower_http::cors::{Any, CorsLayer};
@@ -604,7 +604,7 @@ pub async fn proxy_request(
     let disable_compression = state.settings.shell.editor && processor.is_some();
     sanitize_request_headers(req.headers_mut(), disable_compression);
 
-    apply_github_headers(req.headers_mut(), &state.settings.auth);
+    apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
 
     let response = loop {
         info!("Sending request to: {}", current_uri);
@@ -718,7 +718,7 @@ pub async fn proxy_request(
 
             // Sanitize and modify headers for the redirect request
             sanitize_request_headers(req.headers_mut(), disable_compression);
-            apply_github_headers(req.headers_mut(), &state.settings.auth);
+            apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
 
             // Continue to follow the redirect
             continue;
@@ -1143,7 +1143,7 @@ fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, S
     }
 }
 
-fn apply_github_headers(headers: &mut HeaderMap, auth: &AuthConfig) {
+fn apply_github_headers(headers: &mut HeaderMap, target_uri: &Uri, auth: &AuthConfig) {
     // Add GitHub token if available
     if auth.has_token() {
         if let Ok(value) = HeaderValue::from_str(&format!("token {}", auth.token)) {
@@ -1156,15 +1156,37 @@ fn apply_github_headers(headers: &mut HeaderMap, auth: &AuthConfig) {
         headers.insert(header::USER_AGENT, value);
     }
 
-    // Add Accept header for GitHub API
-    if let Ok(value) = HeaderValue::from_str("application/vnd.github.v3+json") {
-        headers.insert(header::ACCEPT, value);
+    if let Some(host) = target_uri.host().map(|h| h.to_ascii_lowercase()) {
+        if is_github_api_host(&host) {
+            headers.insert(
+                header::ACCEPT,
+                HeaderValue::from_static("application/vnd.github.v3+json"),
+            );
+        } else if is_github_file_host(&host) {
+            if !headers.contains_key(header::ACCEPT) {
+                headers.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
+            }
+        }
     }
+}
+
+fn is_github_api_host(host: &str) -> bool {
+    matches!(host, "api.github.com")
+}
+
+fn is_github_file_host(host: &str) -> bool {
+    matches!(
+        host,
+        "raw.githubusercontent.com"
+            | "codeload.github.com"
+            | "objects.githubusercontent.com"
+            | "media.githubusercontent.com"
+    ) || host.ends_with(".githubusercontent.com")
 }
 
 /// Build CORS layer based on security configuration
 fn setup_tracing(log_config: &config::LogConfig) {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(log_config.get_level()));
