@@ -59,7 +59,7 @@ function handleFormAction() {
     const selectedFormat = formatToggle.querySelector('.active').dataset.value;
 
     if (!githubLink) {
-        githubLinkError.textContent = '请输入链接或镜像名';
+        githubLinkError.textContent = '请输入Github链接';
         githubLinkError.classList.add('text-field__error--visible');
         return;
     }
