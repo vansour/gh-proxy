@@ -1098,7 +1098,7 @@ async fn collect_body_with_limit(body: Incoming, size_limit_mb: u64) -> ProxyRes
 }
 
 fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, String> {
-    match String::from_utf8(body_bytes.clone()) {
+    match String::from_utf8(body_bytes) {
         Ok(text) => {
             info!(
                 "Processing shell script ({} bytes), adding proxy prefix: {}",
@@ -1107,40 +1107,21 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
             );
             Ok(utils::url::add_proxy_to_github_urls(&text, proxy_url).into_bytes())
         }
-        Err(_) => {
-            let mut fixed_bytes = body_bytes;
-
-            loop {
-                match String::from_utf8(fixed_bytes.clone()) {
-                    Ok(text) => {
-                        debug!("Recovered from UTF-8 error with byte fixing");
-                        return Ok(
-                            utils::url::add_proxy_to_github_urls(&text, proxy_url).into_bytes()
-                        );
-                    }
-                    Err(e) => {
-                        let invalid_pos = e.utf8_error().valid_up_to();
-                        if invalid_pos >= fixed_bytes.len() {
-                            let lossy_text = String::from_utf8_lossy(&fixed_bytes);
-                            warn!(
-                                "Cannot fully recover shell script UTF-8, using lossy conversion"
-                            );
-                            return Ok(utils::url::add_proxy_to_github_urls(
-                                &lossy_text,
-                                proxy_url,
-                            )
-                            .into_bytes());
-                        }
-                        fixed_bytes[invalid_pos] = b'?';
-                    }
-                }
-            }
+        Err(err) => {
+            let utf8_error = err.utf8_error();
+            let bytes = err.into_bytes();
+            let lossy_text = String::from_utf8_lossy(&bytes);
+            warn!(
+                "Shell script contains non-UTF-8 data ({}), applying lossy conversion",
+                utf8_error
+            );
+            Ok(utils::url::add_proxy_to_github_urls(&lossy_text, proxy_url).into_bytes())
         }
     }
 }
 
 fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, String> {
-    match String::from_utf8(body_bytes.clone()) {
+    match String::from_utf8(body_bytes) {
         Ok(text) => {
             info!(
                 "Processing HTML response ({} bytes), injecting proxy URLs with URL: {}",
@@ -1149,12 +1130,15 @@ fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, S
             );
             Ok(utils::url::add_proxy_to_html_urls(&text, proxy_url).into_bytes())
         }
-        Err(e) => {
+        Err(err) => {
+            let utf8_error = err.utf8_error();
+            let bytes = err.into_bytes();
+            let lossy_text = String::from_utf8_lossy(&bytes);
             warn!(
-                "HTML response contains non-UTF-8 data, skipping processing: {}",
-                e
+                "HTML response contains non-UTF-8 data ({}), applying lossy conversion",
+                utf8_error
             );
-            Ok(body_bytes)
+            Ok(utils::url::add_proxy_to_html_urls(&lossy_text, proxy_url).into_bytes())
         }
     }
 }
