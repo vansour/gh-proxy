@@ -578,7 +578,7 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
 /// - Automatic redirect following (3xx responses)
 pub async fn proxy_request(
     state: &AppState,
-    mut req: Request<Body>,
+    req: Request<Body>,
     target_uri: Uri,
     proxy_kind: ProxyKind,
     processor: Option<ResponsePostProcessor>,
@@ -597,8 +597,21 @@ pub async fn proxy_request(
     let initial_method = req.method().clone();
     let initial_headers = req.headers().clone();
 
-    // Update request URI
-    *req.uri_mut() = current_uri.clone();
+    // Collect the original request body so it can be reused for redirects
+    let (mut req_parts, body) = req.into_parts();
+    req_parts.uri = current_uri.clone();
+
+    let body_bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            error!("Failed to read request body: {}", e);
+            let err = ProxyError::ProcessingError(format!("Failed to read request body: {}", e));
+            lifecycle.fail(Some(&err));
+            return Err(err);
+        }
+    };
+
+    let mut req = Request::from_parts(req_parts, Body::from(body_bytes.clone()));
 
     // Sanitize and modify headers
     let disable_compression = state.settings.shell.editor && processor.is_some();
@@ -710,7 +723,7 @@ pub async fn proxy_request(
             req = Request::builder()
                 .method(initial_method.clone())
                 .uri(current_uri.clone())
-                .body(Body::empty())
+                .body(Body::from(body_bytes.clone()))
                 .map_err(ProxyError::HttpBuilder)?;
 
             // Copy headers from initial request
