@@ -726,17 +726,17 @@ pub async fn proxy_request(
     );
 
     // Check response size limit BEFORE processing when length is known
-    if let Some(length) = content_length {
-        if length > size_limit_bytes {
-            let size_mb = length / 1024 / 1024;
-            warn!(
-                "Response size {} bytes ({} MB) exceeds limit {} MB",
-                length, size_mb, state.settings.server.size_limit
-            );
-            let error = ProxyError::SizeExceeded(size_mb, state.settings.server.size_limit);
-            lifecycle.fail(Some(&error));
-            return Err(error);
-        }
+    if let Some(length) = content_length
+        && length > size_limit_bytes
+    {
+        let size_mb = length / 1024 / 1024;
+        warn!(
+            "Response size {} bytes ({} MB) exceeds limit {} MB",
+            length, size_mb, state.settings.server.size_limit
+        );
+        let error = ProxyError::SizeExceeded(size_mb, state.settings.server.size_limit);
+        lifecycle.fail(Some(&error));
+        return Err(error);
     }
 
     let shell_processing_enabled = state.settings.shell.editor && processor.is_some();
@@ -831,29 +831,6 @@ pub async fn proxy_request(
 
     let response = Response::from_parts(parts, Body::from_stream(streaming_body));
     Ok(response)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_html_like_content_type() {
-        let uri: Uri = "https://example.com/index.html".parse().unwrap();
-        let content_type = Some("text/html; charset=utf-8".to_string());
-        assert!(is_response_needs_text_processing(&content_type, &uri, true));
-    }
-
-    #[test]
-    fn skips_processing_when_shell_disabled() {
-        let uri: Uri = "https://example.com/index.html".parse().unwrap();
-        let content_type = Some("text/html; charset=utf-8".to_string());
-        assert!(!is_response_needs_text_processing(
-            &content_type,
-            &uri,
-            false
-        ));
-    }
 }
 
 /// Determine if a response needs text processing (URL injection, modification)
@@ -988,12 +965,11 @@ fn fix_content_type_header(headers: &mut HeaderMap, target_uri: &Uri) {
     let content_type = headers.get(header::CONTENT_TYPE);
 
     // If Content-Type is already set and not text/plain, don't override
-    if let Some(ct) = content_type {
-        if let Ok(ct_str) = ct.to_str() {
-            if !ct_str.to_lowercase().starts_with("text/plain") {
-                return;
-            }
-        }
+    if let Some(ct) = content_type
+        && let Ok(ct_str) = ct.to_str()
+        && !ct_str.to_lowercase().starts_with("text/plain")
+    {
+        return;
     }
 
     // Determine MIME type based on file extension
@@ -1193,10 +1169,10 @@ fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, S
 
 fn apply_github_headers(headers: &mut HeaderMap, target_uri: &Uri, auth: &AuthConfig) {
     // Add GitHub token if available
-    if auth.has_token() {
-        if let Ok(value) = HeaderValue::from_str(&format!("token {}", auth.token)) {
-            headers.insert(header::AUTHORIZATION, value);
-        }
+    if auth.has_token()
+        && let Ok(value) = HeaderValue::from_str(&format!("token {}", auth.token))
+    {
+        headers.insert(header::AUTHORIZATION, value);
     }
 
     // Add User-Agent
@@ -1210,10 +1186,8 @@ fn apply_github_headers(headers: &mut HeaderMap, target_uri: &Uri, auth: &AuthCo
                 header::ACCEPT,
                 HeaderValue::from_static("application/vnd.github.v3+json"),
             );
-        } else if is_github_file_host(&host) {
-            if !headers.contains_key(header::ACCEPT) {
-                headers.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
-            }
+        } else if is_github_file_host(&host) && !headers.contains_key(header::ACCEPT) {
+            headers.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
         }
     }
 }
@@ -1252,4 +1226,26 @@ fn setup_tracing(log_config: &config::LogConfig) {
         .init();
 
     eprintln!("Logging initialized: console only");
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_html_like_content_type() {
+        let uri: Uri = "https://example.com/index.html".parse().unwrap();
+        let content_type = Some("text/html; charset=utf-8".to_string());
+        assert!(is_response_needs_text_processing(&content_type, &uri, true));
+    }
+
+    #[test]
+    fn skips_processing_when_shell_disabled() {
+        let uri: Uri = "https://example.com/index.html".parse().unwrap();
+        let content_type = Some("text/html; charset=utf-8".to_string());
+        assert!(!is_response_needs_text_processing(
+            &content_type,
+            &uri,
+            false
+        ));
+    }
 }
