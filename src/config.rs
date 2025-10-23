@@ -1,7 +1,6 @@
 use std::{fs, path::Path, time::Duration};
 
 use serde::Deserialize;
-use serde_json;
 use thiserror::Error;
 
 const DEFAULT_CONFIG_PATH: &str = "/app/config/config.toml";
@@ -324,16 +323,10 @@ impl ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ShellConfig {
     pub editor: bool,
-}
-
-impl Default for ShellConfig {
-    fn default() -> Self {
-        Self { editor: false }
-    }
 }
 
 impl ShellConfig {
@@ -400,18 +393,10 @@ impl LogConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct AuthConfig {
     pub token: String,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            token: String::new(),
-        }
-    }
 }
 
 impl AuthConfig {

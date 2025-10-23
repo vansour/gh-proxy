@@ -1,5 +1,6 @@
 # GitHub 文件代理加速器 (gh-proxy)
 
+[![CI](https://github.com/vansour/gh-proxy/workflows/CI/badge.svg)](https://github.com/vansour/gh-proxy/actions)
 [![Rust](https://img.shields.io/badge/Rust-1.48.0-orange)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Supported-blue)](Dockerfile)
@@ -189,6 +190,40 @@ gh-proxy/
 - **tracing**: 日志和追踪
 
 更多依赖详见 `Cargo.toml`。
+
+## 🔧 开发指南
+
+### 代码质量检查
+
+项目配置了自动化 CI/CD 流程，每次提交和 Pull Request 都会运行以下检查：
+
+- **测试**: 运行所有单元测试
+- **格式化**: 检查代码格式是否符合 Rust 标准
+- **Clippy**: 运行 Rust 静态分析工具
+
+在提交代码前，建议在本地运行以下命令：
+
+```bash
+# 运行测试
+cargo test
+
+# 检查代码格式
+cargo fmt --all -- --check
+
+# 运行 clippy 检查
+cargo clippy --all-targets --all-features -- -D warnings
+
+# 构建项目
+cargo build --release
+```
+
+### 自动格式化
+
+可以使用以下命令自动格式化代码：
+
+```bash
+cargo fmt --all
+```
 
 ## 📝 许可证
 
