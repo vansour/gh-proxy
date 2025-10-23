@@ -46,10 +46,7 @@ pub fn get_index_html_etag() -> &'static String {
 
 /// Get cached favicon content, loading from disk on first access
 pub fn get_favicon() -> &'static Vec<u8> {
-    FAVICON_ICO.get_or_init(|| match std::fs::read("/app/web/favicon.ico") {
-        Ok(content) => content,
-        Err(_) => Vec::new(),
-    })
+    FAVICON_ICO.get_or_init(|| std::fs::read("/app/web/favicon.ico").unwrap_or_default())
 }
 
 #[cfg(test)]
