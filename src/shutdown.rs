@@ -6,8 +6,8 @@
 // - Liveness and readiness probes for Kubernetes
 // - Request draining before shutdown
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};

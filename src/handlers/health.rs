@@ -1,6 +1,6 @@
 /// Health check handlers for Kubernetes and monitoring
 /// Provides liveness and readiness probes for container orchestration
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
