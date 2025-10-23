@@ -2,8 +2,8 @@
 /// Creates and configures the hyper HTTP client with TLS support
 use axum::body::Body;
 use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 
 use crate::config::ServerConfig;

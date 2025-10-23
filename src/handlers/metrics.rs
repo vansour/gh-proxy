@@ -1,6 +1,6 @@
 /// Metrics exposition handlers for monitoring
 /// Provides metrics in both Prometheus and JSON formats
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use serde_json;
 
 use crate::AppState;

@@ -2,7 +2,7 @@
 /// Manages IP blacklist loading and matching
 use tracing::{info, warn};
 
-use crate::{config, AppState, ProxyError, ProxyResult};
+use crate::{AppState, ProxyError, ProxyResult, config};
 
 /// Load blacklist lazily (only once, on first use)
 pub async fn load_blacklist_lazy(state: &AppState) -> &Vec<String> {
