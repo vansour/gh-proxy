@@ -1,4 +1,6 @@
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
@@ -10,7 +12,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Request, State},
-    http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, Method, Response, StatusCode, Uri},
     routing::{any, get},
 };
 use bytes::Bytes;
@@ -29,7 +31,6 @@ mod api;
 mod config;
 mod github;
 mod handlers;
-mod metrics;
 mod services;
 mod shutdown;
 mod utils;
@@ -45,8 +46,6 @@ pub struct AppState {
     pub shutdown_manager: shutdown::ShutdownManager,
     /// Server uptime tracker
     pub uptime_tracker: Arc<shutdown::UptimeTracker>,
-    /// Metrics collector for Prometheus
-    pub metrics: metrics::MetricsCollector,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -133,82 +132,39 @@ impl ProxyError {
 
 pub type ProxyResult<T> = Result<T, ProxyError>;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ProxyKind {
-    GitHub,
-}
-
 #[derive(Clone)]
 pub enum ResponsePostProcessor {
     ShellEditor { proxy_url: Arc<str> },
 }
 
 struct RequestLifecycle {
-    metrics_guard: metrics::RequestMetrics,
-    metrics: metrics::MetricsCollector,
     shutdown: shutdown::ShutdownManager,
     completed: bool,
 }
 
 impl RequestLifecycle {
-    fn new(state: &AppState, proxy_kind: ProxyKind) -> Self {
+    fn new(state: &AppState) -> Self {
         state.shutdown_manager.request_started();
 
-        match proxy_kind {
-            ProxyKind::GitHub => state.metrics.record_github_request(),
-        }
-
-        let metrics_guard = state.metrics.record_request_start();
-
         Self {
-            metrics_guard,
-            metrics: state.metrics.clone(),
             shutdown: state.shutdown_manager.clone(),
             completed: false,
         }
     }
 
-    fn success(&mut self, bytes_sent: u64) {
+    fn success(&mut self) {
         if self.completed {
             return;
         }
-
-        self.metrics_guard.success(bytes_sent);
         self.shutdown.request_completed();
         self.completed = true;
     }
 
-    fn fail(&mut self, error: Option<&ProxyError>) {
+    fn fail(&mut self, _error: Option<&ProxyError>) {
         if self.completed {
             return;
         }
 
-        if let Some(err) = error {
-            match err {
-                ProxyError::AccessDenied(_) => {
-                    self.metrics.record_access_denied_error();
-                }
-                ProxyError::SizeExceeded(_, _) => {
-                    self.metrics.record_size_exceeded_error();
-                }
-                ProxyError::InvalidTarget(_)
-                | ProxyError::InvalidGitHubUrl(_)
-                | ProxyError::GitHubRepoHomepage(_)
-                | ProxyError::GitHubWebPage(_) => {
-                    self.metrics.record_proxy_error();
-                }
-                ProxyError::Http(_)
-                | ProxyError::ProcessingError(_)
-                | ProxyError::UnsupportedHost(_)
-                | ProxyError::HttpBuilder(_) => {
-                    self.metrics.record_proxy_error();
-                }
-            }
-        } else {
-            self.metrics.record_proxy_error();
-        }
-
-        self.metrics_guard.error();
         self.shutdown.request_completed();
         self.completed = true;
     }
@@ -217,7 +173,6 @@ impl RequestLifecycle {
 impl Drop for RequestLifecycle {
     fn drop(&mut self) {
         if !self.completed {
-            self.metrics_guard.error();
             self.shutdown.request_completed();
         }
     }
@@ -268,13 +223,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr: SocketAddr = settings.server.bind_addr().parse()?;
     let client = services::client::build_client(&settings.server);
 
-    let github_config = GitHubConfig::new(&settings.auth.token);
+    let github_config = GitHubConfig::new(&settings.auth.token, &settings.proxy);
 
     // Create shutdown manager and uptime tracker
     let shutdown_manager = shutdown::ShutdownManager::new();
     let uptime_tracker = Arc::new(shutdown::UptimeTracker::new());
-    let metrics = metrics::MetricsCollector::new();
-
     let app_state = AppState {
         settings: Arc::new(settings),
         github_config: Arc::new(github_config),
@@ -282,7 +235,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         blacklist_cache: Arc::new(OnceCell::new()),
         shutdown_manager,
         uptime_tracker,
-        metrics,
     };
 
     // 配置 CORS - 允许跨域访问
@@ -296,8 +248,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(handlers::static_files::index))
         .route("/healthz", get(handlers::health::health_liveness))
         .route("/readyz", get(handlers::health::health_readiness))
-        .route("/metrics", get(handlers::metrics::metrics_prometheus))
-        .route("/metrics/json", get(handlers::metrics::metrics_json))
         .route("/style.css", get(handlers::static_files::serve_static_file))
         .route("/script.js", get(handlers::static_files::serve_static_file))
         .route("/favicon.ico", get(handlers::static_files::serve_favicon))
@@ -319,8 +269,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  - GET  /                  - Web UI");
     info!("  - GET  /healthz           - Liveness probe (is server alive)");
     info!("  - GET  /readyz            - Readiness probe (is server ready)");
-    info!("  - GET  /metrics           - Prometheus metrics");
-    info!("  - GET  /metrics/json      - JSON metrics");
     info!("  - GET  /api/config        - Get configuration");
     info!("  - ANY  /github/*path      - GitHub proxy");
     info!("  - ANY  /*path             - Fallback proxy");
@@ -329,7 +277,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a shutdown manager instance for the shutdown signal handler
     let shutdown_mgr = app_state.shutdown_manager.clone();
 
-    axum::serve(listener, app)
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    axum::serve(listener, service)
         .with_graceful_shutdown(shutdown_signal(shutdown_mgr))
         .await?;
 
@@ -392,7 +342,7 @@ async fn shutdown_signal(shutdown_mgr: shutdown::ShutdownManager) {
 }
 
 /// Resolve the target URI for fallback proxy
-fn resolve_target_uri_with_validation(uri: &Uri) -> ProxyResult<Uri> {
+fn resolve_target_uri_with_validation(uri: &Uri, host_guard: &GitHubConfig) -> ProxyResult<Uri> {
     let target_uri = resolve_fallback_target(uri).map_err(|msg| {
         // Log at debug level instead of error for probe requests
         debug!("Fallback target resolution failed: {}", msg);
@@ -400,6 +350,14 @@ fn resolve_target_uri_with_validation(uri: &Uri) -> ProxyResult<Uri> {
     })?;
 
     let target_str = target_uri.to_string();
+
+    let host = target_uri.host().ok_or_else(|| {
+        ProxyError::InvalidTarget(format!("Target URI missing host: {}", target_str))
+    })?;
+
+    if !host_guard.is_allowed(host) {
+        return Err(ProxyError::UnsupportedHost(host.to_string()));
+    }
 
     // Check if it's a non-downloadable GitHub web path (pkgs, releases, etc.)
     if github::is_github_web_only_path(&target_str) {
@@ -525,7 +483,10 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
     }
 
     // Resolve target URI
-    let target_uri = match resolve_target_uri_with_validation(req.uri()) {
+    let target_uri = match resolve_target_uri_with_validation(
+        req.uri(),
+        state.github_config.as_ref(),
+    ) {
         Ok(uri) => uri,
         Err(_) => {
             warn!("Path is not a valid proxy target (404 Not Found): {}", path);
@@ -541,8 +502,6 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         }
     };
 
-    state.metrics.record_fallback_request();
-
     let post_processor = if state.settings.shell.editor {
         Some(ResponsePostProcessor::ShellEditor {
             proxy_url: Arc::from(proxy_url.clone()),
@@ -551,15 +510,7 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         None
     };
 
-    let response = match proxy_request(
-        &state,
-        req,
-        target_uri.clone(),
-        ProxyKind::GitHub,
-        post_processor,
-    )
-    .await
-    {
+    let response = match proxy_request(&state, req, target_uri.clone(), post_processor).await {
         Ok(response) => response,
         Err(error) => return error_response(error),
     };
@@ -580,10 +531,9 @@ pub async fn proxy_request(
     state: &AppState,
     req: Request<Body>,
     target_uri: Uri,
-    proxy_kind: ProxyKind,
     processor: Option<ResponsePostProcessor>,
 ) -> ProxyResult<Response<Body>> {
-    let mut lifecycle = RequestLifecycle::new(state, proxy_kind);
+    let mut lifecycle = RequestLifecycle::new(state);
     let start = std::time::Instant::now();
     let size_limit_mb = state.settings.server.size_limit;
     let size_limit_bytes = size_limit_mb * 1024 * 1024;
@@ -601,17 +551,29 @@ pub async fn proxy_request(
     let (mut req_parts, body) = req.into_parts();
     req_parts.uri = current_uri.clone();
 
-    let body_bytes = match body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            error!("Failed to read request body: {}", e);
-            let err = ProxyError::ProcessingError(format!("Failed to read request body: {}", e));
-            lifecycle.fail(Some(&err));
-            return Err(err);
+    let mut body_bytes: Option<Bytes> = None;
+    let should_buffer_body = should_buffer_request_body(&initial_method, &req_parts.headers);
+
+    let request_body = if should_buffer_body {
+        match body.collect().await {
+            Ok(collected) => {
+                let bytes = collected.to_bytes();
+                body_bytes = Some(bytes.clone());
+                Body::from(bytes)
+            }
+            Err(e) => {
+                error!("Failed to read request body: {}", e);
+                let err =
+                    ProxyError::ProcessingError(format!("Failed to read request body: {}", e));
+                lifecycle.fail(Some(&err));
+                return Err(err);
+            }
         }
+    } else {
+        Body::empty()
     };
 
-    let mut req = Request::from_parts(req_parts, Body::from(body_bytes.clone()));
+    let mut req = Request::from_parts(req_parts, request_body);
 
     // Sanitize and modify headers
     let disable_compression = state.settings.shell.editor && processor.is_some();
@@ -720,10 +682,15 @@ pub async fn proxy_request(
             };
 
             // Create a new request for the redirect (reuse method and headers from initial request)
+            let redirect_body = body_bytes
+                .as_ref()
+                .map(|bytes| Body::from(bytes.clone()))
+                .unwrap_or_else(Body::empty);
+
             req = Request::builder()
                 .method(initial_method.clone())
                 .uri(current_uri.clone())
-                .body(Body::from(body_bytes.clone()))
+                .body(redirect_body)
                 .map_err(ProxyError::HttpBuilder)?;
 
             // Copy headers from initial request
@@ -836,15 +803,17 @@ pub async fn proxy_request(
         }
 
         sanitize_response_headers(&mut parts.headers, true, true, loosen_headers);
+        if loosen_headers {
+            apply_processed_body_cache_headers(&mut parts.headers, &processed_bytes);
+        }
         let content_length_value = HeaderValue::from_str(&processed_bytes.len().to_string())
             .unwrap_or_else(|_| HeaderValue::from_static("0"));
         parts
             .headers
             .insert(hyper::header::CONTENT_LENGTH, content_length_value);
 
-        let bytes_sent = processed_bytes.len() as u64;
         let response = Response::from_parts(parts, Body::from(processed_bytes));
-        lifecycle.success(bytes_sent);
+        lifecycle.success();
         return Ok(response);
     }
 
@@ -862,6 +831,29 @@ pub async fn proxy_request(
 
     let response = Response::from_parts(parts, Body::from_stream(streaming_body));
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_html_like_content_type() {
+        let uri: Uri = "https://example.com/index.html".parse().unwrap();
+        let content_type = Some("text/html; charset=utf-8".to_string());
+        assert!(is_response_needs_text_processing(&content_type, &uri, true));
+    }
+
+    #[test]
+    fn skips_processing_when_shell_disabled() {
+        let uri: Uri = "https://example.com/index.html".parse().unwrap();
+        let content_type = Some("text/html; charset=utf-8".to_string());
+        assert!(!is_response_needs_text_processing(
+            &content_type,
+            &uri,
+            false
+        ));
+    }
 }
 
 /// Determine if a response needs text processing (URL injection, modification)
@@ -911,6 +903,27 @@ fn sanitize_request_headers(headers: &mut HeaderMap, disable_compression: bool) 
     }
 }
 
+fn should_buffer_request_body(method: &Method, headers: &HeaderMap) -> bool {
+    if headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|length| length > 0)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    if headers.contains_key(header::TRANSFER_ENCODING) {
+        return true;
+    }
+
+    matches!(
+        *method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE | Method::OPTIONS
+    )
+}
+
 fn sanitize_response_headers(
     headers: &mut HeaderMap,
     body_replaced: bool,
@@ -946,6 +959,28 @@ fn sanitize_response_headers(
 
     // IMPORTANT: Keep Location header for redirects (3xx responses)
     // The Location header should be preserved as-is for proper redirect handling
+}
+
+const PROCESSED_RESPONSE_CACHE_CONTROL: &str = "public, max-age=300, stale-while-revalidate=60";
+
+fn apply_processed_body_cache_headers(headers: &mut HeaderMap, body: &[u8]) {
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(PROCESSED_RESPONSE_CACHE_CONTROL),
+    );
+
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    let digest = hasher.finish();
+    let etag_value = format!("\"ghp-{digest:x}\"");
+    match HeaderValue::from_str(&etag_value) {
+        Ok(value) => {
+            headers.insert(header::ETAG, value);
+        }
+        Err(error) => {
+            warn!("Failed to set processed response ETag: {}", error);
+        }
+    }
 }
 
 fn fix_content_type_header(headers: &mut HeaderMap, target_uri: &Uri) {
@@ -1073,7 +1108,7 @@ impl Stream for ProxyBodyStream {
             }
             Poll::Ready(None) => {
                 if let Some(mut lifecycle) = this.lifecycle.take() {
-                    lifecycle.success(this.total_bytes);
+                    lifecycle.success();
                 }
                 Poll::Ready(None)
             }

@@ -12,22 +12,22 @@ use crate::config::ServerConfig;
 ///
 /// Configuration details:
 /// - TCP_NODELAY: Enabled for reduced latency on small packets
-/// - Connection timeout: 30 seconds
-/// - Keep-alive: Enabled with default timeouts for connection reuse
-/// - Pool: Configured for efficient connection pooling
+/// - Connection timeout: Configurable via server.connectTimeoutSeconds
+/// - Keep-alive: Configurable via server.keepAliveSeconds
+/// - Pool: Configurable for efficient connection pooling per host
 pub fn build_client(
-    _server: &ServerConfig,
+    server: &ServerConfig,
 ) -> Client<hyper_rustls::HttpsConnector<HttpConnector>, Body> {
     let mut http_connector = HttpConnector::new();
 
     // Enable TCP_NODELAY to reduce latency for small packets
     http_connector.set_nodelay(true);
 
-    // Set connection timeout to 30 seconds
-    http_connector.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
+    // Configure connection timeout (0 disables explicit timeout)
+    http_connector.set_connect_timeout(server.connect_timeout());
 
-    // Enable keep-alive connections for connection pooling
-    http_connector.set_keepalive(Some(std::time::Duration::from_secs(90)));
+    // Enable keep-alive connections for connection pooling (0 disables keep-alive)
+    http_connector.set_keepalive(server.keep_alive());
 
     // Enable both IPv4 and IPv6 with support for dual-stack
     http_connector.enforce_http(false);
@@ -43,6 +43,6 @@ pub fn build_client(
     // Build client with optimized settings for connection pooling
     Client::builder(TokioExecutor::new())
         .http2_only(false) // Support both HTTP/1.1 and HTTP/2
-        .pool_max_idle_per_host(8) // Maintain up to 8 idle connections per host
+        .pool_max_idle_per_host(server.pool_max_idle_per_host) // Maintain configured idle connections per host
         .build(connector)
 }

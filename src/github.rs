@@ -9,7 +9,7 @@ use hyper::header;
 use hyper::http::uri::{Authority, PathAndQuery};
 use tracing::{error, info, instrument, warn};
 
-use crate::{AppState, ProxyError, ProxyKind, ProxyResult};
+use crate::{AppState, ProxyError, ProxyResult};
 
 /// GitHub proxy handler for /github/* routes
 #[instrument(skip_all, fields(path = %path))]
@@ -23,7 +23,7 @@ pub async fn github_proxy(
     match resolve_github_target(&state, &path) {
         Ok(target_uri) => {
             info!("Resolved GitHub target: {}", target_uri);
-            match crate::proxy_request(&state, req, target_uri, ProxyKind::GitHub, None).await {
+            match crate::proxy_request(&state, req, target_uri, None).await {
                 Ok(response) => {
                     info!("GitHub proxy success: status={}", response.status());
                     Ok(response)

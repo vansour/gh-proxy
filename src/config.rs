@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
 use serde::Deserialize;
 use serde_json;
@@ -23,6 +23,8 @@ pub enum ConfigError {
 pub struct Settings {
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
     #[serde(default)]
     pub shell: ShellConfig,
     #[serde(default)]
@@ -49,8 +51,195 @@ impl Settings {
     pub fn validate(&mut self) -> Result<(), ConfigError> {
         self.server.finalize();
         self.server.validate()?;
+        self.proxy.validate()?;
         self.log.validate()?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ProxyConfig {
+    #[serde(rename = "allowedHosts")]
+    pub allowed_hosts: Vec<String>,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            allowed_hosts: vec![
+                "github.com".to_string(),
+                "*.github.com".to_string(),
+                "githubusercontent.com".to_string(),
+                "*.githubusercontent.com".to_string(),
+            ],
+        }
+    }
+}
+
+impl ProxyConfig {
+    pub fn validate(&mut self) -> Result<(), ConfigError> {
+        if self.allowed_hosts.is_empty() {
+            return Err(ConfigError::Validation(
+                "proxy.allowedHosts must contain at least one entry".to_string(),
+            ));
+        }
+
+        // Normalize entries and validate they are parseable patterns
+        let mut normalized = Vec::with_capacity(self.allowed_hosts.len());
+        for entry in self.allowed_hosts.iter() {
+            let pattern = entry.trim();
+            if pattern.is_empty() {
+                return Err(ConfigError::Validation(
+                    "proxy.allowedHosts cannot include empty values".to_string(),
+                ));
+            }
+
+            HostPattern::parse(pattern).map_err(|err| {
+                ConfigError::Validation(format!(
+                    "proxy.allowedHosts entry '{}' is invalid: {}",
+                    entry, err
+                ))
+            })?;
+
+            normalized.push(pattern.to_ascii_lowercase());
+        }
+
+        self.allowed_hosts = normalized;
+        Ok(())
+    }
+
+    pub(crate) fn host_patterns(&self) -> Vec<HostPattern> {
+        self.allowed_hosts
+            .iter()
+            .map(|pattern| HostPattern::parse(pattern).expect("validated pattern became invalid"))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HostPattern {
+    value: String,
+    kind: HostPatternKind,
+    suffix: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostPatternKind {
+    Exact,
+    Suffix,
+}
+
+impl HostPattern {
+    fn parse(raw: &str) -> Result<Self, String> {
+        let mut pattern = raw.trim();
+
+        if pattern.is_empty() {
+            return Err("value cannot be empty".to_string());
+        }
+
+        if let Some(idx) = pattern.find("://") {
+            pattern = &pattern[idx + 3..];
+        }
+
+        // Discard any path component that might be present
+        if let Some((host_part, _)) = pattern.split_once('/') {
+            pattern = host_part;
+        }
+
+        // Separate host from optional port
+        if pattern.starts_with('[') {
+            let closing = pattern
+                .find(']')
+                .ok_or_else(|| "missing closing ']' for IPv6 literal".to_string())?;
+            pattern = &pattern[1..closing];
+        } else if let Some((host, _)) = pattern.split_once(':') {
+            pattern = host;
+        }
+
+        pattern = pattern.trim();
+
+        let (kind, host) = if let Some(stripped) = pattern.strip_prefix("*.") {
+            (HostPatternKind::Suffix, stripped)
+        } else if let Some(stripped) = pattern.strip_prefix('.') {
+            (HostPatternKind::Suffix, stripped)
+        } else {
+            (HostPatternKind::Exact, pattern)
+        };
+
+        let host = host.trim_matches('.');
+
+        if host.is_empty() {
+            return Err("resolved host is empty".to_string());
+        }
+
+        if host.contains('*') {
+            return Err("wildcards must use the '*.example.com' form".to_string());
+        }
+
+        let value = host.to_ascii_lowercase();
+        let suffix = match kind {
+            HostPatternKind::Exact => None,
+            HostPatternKind::Suffix => Some(format!(".{}", value)),
+        };
+
+        Ok(Self {
+            value,
+            kind,
+            suffix,
+        })
+    }
+
+    fn matches(&self, host: &str) -> bool {
+        match self.kind {
+            HostPatternKind::Exact => host == self.value,
+            HostPatternKind::Suffix => {
+                host == self.value
+                    || self
+                        .suffix
+                        .as_ref()
+                        .map(|suffix| host.ends_with(suffix))
+                        .unwrap_or(false)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_pattern_matches_only_same_host() {
+        let pattern = HostPattern::parse("github.com").unwrap();
+        assert!(pattern.matches("github.com"));
+        assert!(!pattern.matches("raw.github.com"));
+    }
+
+    #[test]
+    fn suffix_pattern_allows_subdomains() {
+        let pattern = HostPattern::parse("*.github.com").unwrap();
+        assert!(pattern.matches("github.com"));
+        assert!(pattern.matches("raw.github.com"));
+        assert!(!pattern.matches("example.com"));
+    }
+
+    #[test]
+    fn parser_trims_scheme_and_path() {
+        let pattern = HostPattern::parse("https://*.githubusercontent.com/download").unwrap();
+        assert!(pattern.matches("githubusercontent.com"));
+        assert!(pattern.matches("raw.githubusercontent.com"));
+        assert!(pattern.matches("cdn.raw.githubusercontent.com"));
+    }
+
+    #[test]
+    fn invalid_patterns_are_rejected() {
+        assert!(HostPattern::parse("*").is_err());
+        assert!(HostPattern::parse("http://").is_err());
+        let mut cfg = ProxyConfig {
+            allowed_hosts: vec!["".into()],
+        };
+        assert!(cfg.validate().is_err());
     }
 }
 
@@ -61,6 +250,12 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(rename = "sizeLimit")]
     pub size_limit: u64, // MB
+    #[serde(rename = "connectTimeoutSeconds")]
+    pub connect_timeout_secs: u64,
+    #[serde(rename = "keepAliveSeconds")]
+    pub keep_alive_secs: u64,
+    #[serde(rename = "poolMaxIdlePerHost")]
+    pub pool_max_idle_per_host: usize,
 }
 
 impl Default for ServerConfig {
@@ -69,6 +264,9 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             size_limit: 125,
+            connect_timeout_secs: 30,
+            keep_alive_secs: 90,
+            pool_max_idle_per_host: 8,
         }
     }
 }
@@ -84,6 +282,22 @@ impl ServerConfig {
         format!("{}:{}", self.host, self.port)
     }
 
+    pub fn connect_timeout(&self) -> Option<Duration> {
+        if self.connect_timeout_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(self.connect_timeout_secs))
+        }
+    }
+
+    pub fn keep_alive(&self) -> Option<Duration> {
+        if self.keep_alive_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(self.keep_alive_secs))
+        }
+    }
+
     /// Validate server configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Port must be in valid range
@@ -97,6 +311,12 @@ impl ServerConfig {
         if self.size_limit == 0 {
             return Err(ConfigError::Validation(
                 "server.sizeLimit must be at least 1 MB".to_string(),
+            ));
+        }
+
+        if self.pool_max_idle_per_host == 0 {
+            return Err(ConfigError::Validation(
+                "server.poolMaxIdlePerHost must be at least 1".to_string(),
             ));
         }
 
@@ -383,33 +603,23 @@ impl BlacklistConfig {
 // GitHub-related helper structures
 pub struct GitHubConfig {
     pub default_host: String,
+    allowed_hosts: Vec<HostPattern>,
 }
 
 impl GitHubConfig {
-    pub fn new(_auth_token: &str) -> Self {
+    pub fn new(_auth_token: &str, proxy: &ProxyConfig) -> Self {
         Self {
             default_host: "github.com".to_string(),
+            allowed_hosts: proxy.host_patterns(),
         }
     }
 
-    /// Check if a host is a valid GitHub domain
-    /// Supports *.github.com and *.githubusercontent.com domains
+    /// Check if a host is permitted by configuration
     pub fn is_allowed(&self, host: &str) -> bool {
         let host = host.to_ascii_lowercase();
-        Self::is_github_domain(&host)
-    }
-
-    /// Check if a host is a GitHub domain
-    /// Matches any domain ending with .github.com or .githubusercontent.com (including subdomains)
-    pub fn is_github_domain(host: &str) -> bool {
-        let host = host.to_ascii_lowercase();
-        host.ends_with(".github.com") || 
-        host == "github.com" ||
-        host.ends_with(".githubusercontent.com") || 
-        host == "raw.githubusercontent.com" ||
-        host == "gist.github.com" ||
-        // Support custom GitHub domains in enterprise deployments
-        host.contains("github") && (host.contains(".com") || host.contains(".io") || host.contains(".org"))
+        self.allowed_hosts
+            .iter()
+            .any(|pattern| pattern.matches(&host))
     }
 }
 

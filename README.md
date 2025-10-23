@@ -13,7 +13,7 @@
 - **Web UI**: 现代化的 Web 界面，支持实时转换
 - **REST API**: 灵活的 API 接口，满足不同使用场景
 - **黑名单功能**: 支持 IP 和用户黑名单，增强安全性
-- **监控指标**: 内置 Prometheus 指标收集，便于系统监控
+- **监控指标**: 内置 Prometheus 指标收集（包括 CDN 命中率统计），便于系统监控
 - **graceful shutdown**: 优雅关闭，确保请求完成
 - **日志系统**: 完整的日志记录和追踪功能
 - **Docker 支持**: 开箱即用的 Docker 部署
@@ -77,6 +77,17 @@ cargo build --release
 host = "0.0.0.0"           # 监听地址
 port = 8080                # 监听端口
 sizeLimit = 2048           # 文件大小限制 (MB)
+connectTimeoutSeconds = 30 # 回源连接超时 (秒, 0 表示关闭)
+keepAliveSeconds = 90      # 与回源保持连接时长 (秒, 0 表示关闭)
+poolMaxIdlePerHost = 8     # 每个源站的最大空闲连接数
+
+[proxy]
+allowedHosts = [
+  "github.com",             # 精确域名
+  "*.github.com",           # 匹配任意 github.com 子域 (api, codeload 等)
+  "githubusercontent.com",  # 精确域名
+  "*.githubusercontent.com" # 匹配任意 githubusercontent.com 子域 (raw, objects 等)
+]                           # 可按需追加企业或自建域名
 
 [shell]
 editor = true              # 是否启用编辑器
@@ -93,6 +104,9 @@ token = ""                 # GitHub API token (可选)
 enabled = true             # 是否启用黑名单
 blacklistFile = "/app/config/blacklist.json"  # 黑名单文件路径
 ```
+
+- `proxy.allowedHosts` 使用精确域名或 `*.example.com` 通配符限制允许代理的目标站点，默认仅包含 GitHub 官方域名，可按需追加企业实例
+- 其余配置项保持原有行为，例如下载体积限制、日志等
 
 ### 黑名单配置
 
@@ -140,15 +154,6 @@ GET /healthz
 }
 ```
 
-### 获取指标
-
-```bash
-GET /metrics
-```
-
-返回 Prometheus 格式的指标数据。
-
-
 ## 🏗️ 项目结构
 
 ```
@@ -158,7 +163,6 @@ gh-proxy/
 │   ├── api.rs            # API 路由定义
 │   ├── config.rs         # 配置管理
 │   ├── github.rs         # GitHub 交互
-│   ├── metrics.rs        # 监控指标
 │   ├── shutdown.rs       # 优雅关闭
 │   ├── handlers/         # HTTP 处理器
 │   ├── services/         # 业务逻辑服务
