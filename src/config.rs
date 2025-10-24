@@ -78,12 +78,6 @@ impl Default for ProxyConfig {
 
 impl ProxyConfig {
     pub fn validate(&mut self) -> Result<(), ConfigError> {
-        if self.allowed_hosts.is_empty() {
-            return Err(ConfigError::Validation(
-                "proxy.allowedHosts must contain at least one entry".to_string(),
-            ));
-        }
-
         // Normalize entries and validate they are parseable patterns
         let mut normalized = Vec::with_capacity(self.allowed_hosts.len());
         for entry in self.allowed_hosts.iter() {
