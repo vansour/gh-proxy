@@ -6,14 +6,6 @@ connectTimeoutSeconds = 30   # Upstream connect timeout (seconds, 0 disables)
 keepAliveSeconds = 90        # Keep-alive duration for upstream connections (seconds, 0 disables)
 poolMaxIdlePerHost = 8       # Idle connections per upstream host
 
-[proxy]
-allowedHosts = [
-  "github.com",
-  "*.github.com",
-  "githubusercontent.com",
-  "*.githubusercontent.com",
-]
-
 [shell]
 editor = true
 
