@@ -374,18 +374,38 @@ fn resolve_target_uri_with_validation(uri: &Uri, host_guard: &GitHubConfig) -> P
 
 fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
     let path = uri.path();
+    debug!(
+        "resolve_fallback_target - Input URI: {}, path: '{}'",
+        uri, path
+    );
 
     // Remove leading slash
     let path = path.trim_start_matches('/');
+    debug!("After trim_start_matches('/'): '{}'", path);
 
     // Fix common URL malformation: https:/ -> https://
+    // This handles cases where "https://domain" becomes "https:/domain" due to path normalization
     let path = if path.starts_with("https:/") && !path.starts_with("https://") {
-        format!("https://{}", &path[7..])
+        // Extract the part after "https:/" and ensure double slash
+        let after_scheme = &path[7..]; // Skip "https:/"
+        debug!(
+            "Fixed malformed https:/ URL - raw: '{}' -> normalized: 'https://{}'",
+            path, after_scheme
+        );
+        format!("https://{}", after_scheme)
     } else if path.starts_with("http:/") && !path.starts_with("http://") {
-        format!("http://{}", &path[6..])
+        // Extract the part after "http:/" and ensure double slash
+        let after_scheme = &path[6..]; // Skip "http:/"
+        debug!(
+            "Fixed malformed http:/ URL - raw: '{}' -> normalized: 'http://{}'",
+            path, after_scheme
+        );
+        format!("http://{}", after_scheme)
     } else {
+        debug!("No malformation detected, path as-is: '{}'", path);
         path.to_string()
     };
+    debug!("After URL malformation fix: '{}'", path);
 
     if path.starts_with("http://") || path.starts_with("https://") {
         let converted = github::convert_github_blob_to_raw(&path);
@@ -424,8 +444,12 @@ fn is_shell_script(uri: &Uri) -> bool {
 async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
     let method = req.method();
+    let full_uri = req.uri();
 
-    info!("Fallback proxy request: {} {}", method, path);
+    info!(
+        "Fallback proxy request: {} {} (full URI: {})",
+        method, path, full_uri
+    );
 
     // Ignore browser requests for favicon and other common static assets
     if matches!(
@@ -581,8 +605,16 @@ pub async fn proxy_request(
 
     apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
 
+    debug!(
+        "Initial request method: {}, URI: {}",
+        initial_method, current_uri
+    );
+
     let response = loop {
-        info!("Sending request to: {}", current_uri);
+        info!(
+            "Sending request to: {} (method: {})",
+            current_uri, initial_method
+        );
 
         // Send request using the shared client (connection pooling)
         let response = match state.client.request(req).await {
@@ -629,7 +661,13 @@ pub async fn proxy_request(
                     }
                 },
                 None => {
-                    error!("Redirect response without Location header");
+                    error!(
+                        "Redirect response without Location header - Status: {}, URI: {}, Method: {}, Headers: {:?}",
+                        status,
+                        current_uri,
+                        initial_method,
+                        response.headers()
+                    );
                     let error = ProxyError::ProcessingError(
                         "Redirect response (3xx) without Location header".to_string(),
                     );
