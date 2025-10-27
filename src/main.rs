@@ -928,9 +928,6 @@ pub async fn proxy_request(
         }
 
         sanitize_response_headers(&mut parts.headers, true, true, loosen_headers);
-        if loosen_headers {
-            apply_processed_body_cache_headers(&mut parts.headers, &processed_bytes);
-        }
         let content_length_value = HeaderValue::from_str(&processed_bytes.len().to_string())
             .unwrap_or_else(|_| HeaderValue::from_static("0"));
         parts
@@ -946,9 +943,6 @@ pub async fn proxy_request(
 
     // Fix Content-Type for common file extensions if it's missing or incorrect
     fix_content_type_header(&mut parts.headers, &target_uri);
-
-    // Apply Cloudflare CDN optimization headers for cacheable responses
-    apply_cloudflare_cache_headers(&mut parts.headers, status, &target_uri);
 
     let streaming_body = ProxyBodyStream::new(
         body.into_data_stream().boxed(),
@@ -1076,61 +1070,6 @@ fn sanitize_response_headers(
 /// - Preserves ETag/Last-Modified for cache revalidation
 /// - Keeps Accept-Ranges for range requests
 /// - Maintains Accept-Encoding for compression
-fn apply_cloudflare_cache_headers(headers: &mut HeaderMap, status: StatusCode, target_uri: &Uri) {
-    if status != StatusCode::OK && status != StatusCode::PARTIAL_CONTENT {
-        return;
-    }
-
-    let path = target_uri.path();
-
-    // Determine cache duration based on content type
-    let cache_control = if is_small_file(path) {
-        // Small files (HTML, CSS, JS): long cache
-        "public, max-age=2592000, s-maxage=31536000, stale-while-revalidate=604800"
-    } else if is_archive_file(path) || is_release_asset(path) {
-        // Archives and release assets: very long cache (they're immutable by version)
-        "public, max-age=31536000, s-maxage=31536000, immutable"
-    } else if is_source_file(path) {
-        // Source code files: moderate cache
-        "public, max-age=604800, s-maxage=2592000, stale-while-revalidate=86400"
-    } else {
-        // Default: reasonable cache for other content
-        "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600"
-    };
-
-    // Only set Cache-Control if not already present (preserve original if needed)
-    if !headers.contains_key(header::CACHE_CONTROL)
-        && let Ok(value) = HeaderValue::from_str(cache_control)
-    {
-        headers.insert(header::CACHE_CONTROL, value);
-    }
-
-    // Ensure ETag is present for cache revalidation (if not already present)
-    if !headers.contains_key(header::ETAG)
-        && let Some(content_length) = headers.get(header::CONTENT_LENGTH)
-        && let Ok(length_str) = content_length.to_str()
-    {
-        // Generate weak ETag from content length and last modified
-        let last_modified = headers
-            .get(header::LAST_MODIFIED)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("0");
-        let etag = format!(
-            "W/\"{}-{}\"",
-            length_str.replace("\"", ""),
-            last_modified.replace("\"", "").replace(" ", "")
-        );
-        if let Ok(value) = HeaderValue::from_str(&etag) {
-            headers.insert(header::ETAG, value);
-        }
-    }
-
-    // Ensure Range support headers are present for large file downloads
-    if is_large_file(path) && !headers.contains_key("Accept-Ranges") {
-        headers.insert("Accept-Ranges", HeaderValue::from_static("bytes"));
-    }
-}
-
 fn is_small_file(path: &str) -> bool {
     path.ends_with(".js")
         || path.ends_with(".css")
@@ -1167,28 +1106,6 @@ fn is_source_file(path: &str) -> bool {
 
 fn is_large_file(path: &str) -> bool {
     is_archive_file(path) || is_release_asset(path) || path.ends_with(".iso")
-}
-
-const PROCESSED_RESPONSE_CACHE_CONTROL: &str = "public, max-age=300, stale-while-revalidate=60";
-
-fn apply_processed_body_cache_headers(headers: &mut HeaderMap, body: &[u8]) {
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static(PROCESSED_RESPONSE_CACHE_CONTROL),
-    );
-
-    let mut hasher = DefaultHasher::new();
-    body.hash(&mut hasher);
-    let digest = hasher.finish();
-    let etag_value = format!("\"ghp-{digest:x}\"");
-    match HeaderValue::from_str(&etag_value) {
-        Ok(value) => {
-            headers.insert(header::ETAG, value);
-        }
-        Err(error) => {
-            warn!("Failed to set processed response ETag: {}", error);
-        }
-    }
 }
 
 fn fix_content_type_header(headers: &mut HeaderMap, target_uri: &Uri) {
@@ -1767,54 +1684,6 @@ mod tests {
 
         assert_eq!(result.host(), Some("codeload.github.com"));
         assert_eq!(result.path(), "/owner/repo/zip/main");
-    }
-
-    // ============================================================================
-    // Tests for Cloudflare CDN optimization headers
-    // ============================================================================
-
-    #[test]
-    fn test_cloudflare_cache_headers_for_small_files() {
-        // Test that small files (JS, CSS) get long cache headers
-        let mut headers = HeaderMap::new();
-        let uri: Uri = "/owner/repo/main/script.js".parse().unwrap();
-        apply_cloudflare_cache_headers(&mut headers, StatusCode::OK, &uri);
-
-        let cache_control = headers
-            .get(header::CACHE_CONTROL)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-
-        assert!(cache_control.contains("max-age=2592000"));
-        assert!(cache_control.contains("s-maxage=31536000"));
-    }
-
-    #[test]
-    fn test_cloudflare_cache_headers_for_archives() {
-        // Test that archive files get immutable cache headers
-        let mut headers = HeaderMap::new();
-        let uri: Uri = "/owner/repo/releases/download/v1.0.0/app.zip"
-            .parse()
-            .unwrap();
-        apply_cloudflare_cache_headers(&mut headers, StatusCode::OK, &uri);
-
-        let cache_control = headers
-            .get(header::CACHE_CONTROL)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-
-        assert!(cache_control.contains("immutable"));
-        assert!(cache_control.contains("max-age=31536000"));
-    }
-
-    #[test]
-    fn test_cloudflare_cache_headers_only_for_200() {
-        // Test that cache headers are not applied to non-200 responses
-        let mut headers = HeaderMap::new();
-        let uri: Uri = "/owner/repo/main/script.js".parse().unwrap();
-        apply_cloudflare_cache_headers(&mut headers, StatusCode::NOT_FOUND, &uri);
-
-        assert!(!headers.contains_key(header::CACHE_CONTROL));
     }
 
     #[test]

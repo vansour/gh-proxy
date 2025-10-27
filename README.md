@@ -16,7 +16,7 @@
 - **黑名单功能**: 支持 IP 和用户黑名单，增强安全性
 - **graceful shutdown**: 优雅关闭，确保请求完成
 - **日志系统**: 完整的日志记录和追踪功能
-- **Cloudflare CDN 优化**: 智能缓存策略、协议检测、客户端 IP 提取、范围请求支持
+- **Cloudflare CDN 优化**: 协议检测、客户端 IP 提取、范围请求支持
 - **Docker 支持**: 开箱即用的 Docker 部署
 
 ## 📋 系统要求
@@ -182,25 +182,7 @@ gh-proxy/
 
 ## ☁️ Cloudflare CDN 优化
 
-本项目针对 Cloudflare CDN 进行了优化，可以显著改善在 Cloudflare 后的缓存效率和用户体验。
-
-### 1. 智能缓存策略
-
-服务器根据文件类型自动添加 `Cache-Control` 和 `s-maxage` 头：
-
-- **小文件** (JS, CSS, HTML, JSON, SVG): `s-maxage=31536000` (1年)
-- **发布资产** (releases/download): `immutable, s-maxage=31536000` (1年，不可变)
-- **源代码文件** (.rs, .py, .go, etc): `s-maxage=2592000` (30天)
-- **其他内容**: `s-maxage=86400` (1天)
-
-### 2. 缓存验证头
-
-自动保留或生成：
-- **ETag**: 用于条件请求 (304 Not Modified)
-- **Last-Modified**: 支持客户端缓存验证
-- **Accept-Ranges**: 启用范围请求和部分内容缓存
-
-### 3. 协议检测 (Cloudflare 感知)
+### 协议检测 (Cloudflare 感知)
 
 智能检测请求协议，支持 Cloudflare 特定头：
 
@@ -211,7 +193,7 @@ gh-proxy/
 | 3 | URI scheme | 请求 URI 中的协议 |
 | 4 | 启发式判断 | 根据主机名和端口 |
 
-### 4. 客户端 IP 提取 (Cloudflare 优先)
+### 客户端 IP 提取 (Cloudflare 优先)
 
 准确识别真实客户端 IP，优先级顺序：
 
@@ -224,25 +206,17 @@ gh-proxy/
 | 5 | `X-Real-IP` | nginx/reverse proxy |
 | 6 | 连接信息 | 直接连接的源 IP |
 
-### 5. 范围请求支持
+### 范围请求支持
 
 - 保留 `Range` 和 `Accept-Ranges` 头
 - 支持断点续传和分块下载
 - Cloudflare 可缓存部分内容 (206 Partial Content)
 
-### 使用建议
-
-1. **配置 Cloudflare Cache Level**: 设置为 "Cache Everything" 或 "Standard"
-2. **启用 Edge Caching TTL**: 配置与返回的 `Cache-Control` 头相匹配
-3. **启用 Gzip 压缩**: Cloudflare 自动处理压缩
-4. **设置 Browser Cache TTL**: 配合 `max-age` 使用
-
 ### 性能提示
 
-- 发布资产和存档被标记为 `immutable`，Cloudflare 将永久缓存
-- 源代码文件使用 30 天缓存，平衡新鲜度和性能
-- 小文件使用最长缓存周期，减少源站流量
 - 范围请求支持让大文件下载可在边缘节点恢复
+- 所有缓存策略应在 Cloudflare 仪表板中配置
+- 禁用服务器端的 Cache-Control 头可减少头部大小并简化缓存管理
 
 ## 🔧 开发指南
 
