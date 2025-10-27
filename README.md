@@ -14,9 +14,9 @@
 - **Web UI**: 现代化的 Web 界面，支持实时转换
 - **REST API**: 灵活的 API 接口，满足不同使用场景
 - **黑名单功能**: 支持 IP 和用户黑名单，增强安全性
-- **监控指标**: 内置 Prometheus 指标收集（包括 CDN 命中率统计），便于系统监控
 - **graceful shutdown**: 优雅关闭，确保请求完成
 - **日志系统**: 完整的日志记录和追踪功能
+- **Cloudflare CDN 优化**: 智能缓存策略、协议检测、客户端 IP 提取、范围请求支持
 - **Docker 支持**: 开箱即用的 Docker 部署
 
 ## 📋 系统要求
@@ -82,14 +82,6 @@ connectTimeoutSeconds = 30 # 回源连接超时 (秒, 0 表示关闭)
 keepAliveSeconds = 90      # 与回源保持连接时长 (秒, 0 表示关闭)
 poolMaxIdlePerHost = 8     # 每个源站的最大空闲连接数
 
-[proxy]
-allowedHosts = [
-  "github.com",             # 精确域名
-  "*.github.com",           # 匹配任意 github.com 子域 (api, codeload 等)
-  "githubusercontent.com",  # 精确域名
-  "*.githubusercontent.com" # 匹配任意 githubusercontent.com 子域 (raw, objects 等)
-]                           # 可按需追加企业或自建域名
-
 [shell]
 editor = true              # 是否启用编辑器
 
@@ -105,9 +97,6 @@ token = ""                 # GitHub API token (可选)
 enabled = true             # 是否启用黑名单
 blacklistFile = "/app/config/blacklist.json"  # 黑名单文件路径
 ```
-
-- `proxy.allowedHosts` 使用精确域名或 `*.example.com` 通配符限制允许代理的目标站点，默认仅包含 GitHub 官方域名，可按需追加企业实例
-- 其余配置项保持原有行为，例如下载体积限制、日志等
 
 ### 黑名单配置
 
@@ -191,7 +180,72 @@ gh-proxy/
 
 更多依赖详见 `Cargo.toml`。
 
+## ☁️ Cloudflare CDN 优化
+
+本项目针对 Cloudflare CDN 进行了优化，可以显著改善在 Cloudflare 后的缓存效率和用户体验。
+
+### 1. 智能缓存策略
+
+服务器根据文件类型自动添加 `Cache-Control` 和 `s-maxage` 头：
+
+- **小文件** (JS, CSS, HTML, JSON, SVG): `s-maxage=31536000` (1年)
+- **发布资产** (releases/download): `immutable, s-maxage=31536000` (1年，不可变)
+- **源代码文件** (.rs, .py, .go, etc): `s-maxage=2592000` (30天)
+- **其他内容**: `s-maxage=86400` (1天)
+
+### 2. 缓存验证头
+
+自动保留或生成：
+- **ETag**: 用于条件请求 (304 Not Modified)
+- **Last-Modified**: 支持客户端缓存验证
+- **Accept-Ranges**: 启用范围请求和部分内容缓存
+
+### 3. 协议检测 (Cloudflare 感知)
+
+智能检测请求协议，支持 Cloudflare 特定头：
+
+| 优先级 | 头字段 | 说明 |
+|------|-------|------|
+| 1 | `cf-visitor` | Cloudflare 访问者协议 (`{"scheme":"https"}`) |
+| 2 | `X-Forwarded-Proto` | 标准代理协议头 |
+| 3 | URI scheme | 请求 URI 中的协议 |
+| 4 | 启发式判断 | 根据主机名和端口 |
+
+### 4. 客户端 IP 提取 (Cloudflare 优先)
+
+准确识别真实客户端 IP，优先级顺序：
+
+| 优先级 | 头字段 | 说明 |
+|------|-------|------|
+| 1 | `cf-connecting-ip` | Cloudflare 连接 IP |
+| 2 | `X-Forwarded-For` | 代理链 IP |
+| 3 | `Forwarded` | RFC 7239 标准头 |
+| 4 | `True-Client-IP` | Akamai/CF 备用 |
+| 5 | `X-Real-IP` | nginx/reverse proxy |
+| 6 | 连接信息 | 直接连接的源 IP |
+
+### 5. 范围请求支持
+
+- 保留 `Range` 和 `Accept-Ranges` 头
+- 支持断点续传和分块下载
+- Cloudflare 可缓存部分内容 (206 Partial Content)
+
+### 使用建议
+
+1. **配置 Cloudflare Cache Level**: 设置为 "Cache Everything" 或 "Standard"
+2. **启用 Edge Caching TTL**: 配置与返回的 `Cache-Control` 头相匹配
+3. **启用 Gzip 压缩**: Cloudflare 自动处理压缩
+4. **设置 Browser Cache TTL**: 配合 `max-age` 使用
+
+### 性能提示
+
+- 发布资产和存档被标记为 `immutable`，Cloudflare 将永久缓存
+- 源代码文件使用 30 天缓存，平衡新鲜度和性能
+- 小文件使用最长缓存周期，减少源站流量
+- 范围请求支持让大文件下载可在边缘节点恢复
+
 ## 🔧 开发指南
+
 
 ### 代码质量检查
 

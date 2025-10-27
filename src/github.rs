@@ -20,7 +20,10 @@ pub async fn github_proxy(
 ) -> Result<Response<Body>, StatusCode> {
     info!("GitHub proxy request: {} {}", req.method(), path);
 
-    match resolve_github_target(&state, &path) {
+    // Extract query string from the original request URI
+    let query = req.uri().query().map(|q| q.to_string());
+
+    match resolve_github_target(&state, &path, query) {
         Ok(target_uri) => {
             info!("Resolved GitHub target: {}", target_uri);
             match crate::proxy_request(&state, req, target_uri, None).await {
@@ -62,8 +65,48 @@ pub async fn github_proxy(
     }
 }
 
-/// Resolve GitHub target URI from path
-pub fn resolve_github_target(_state: &AppState, path: &str) -> ProxyResult<Uri> {
+/// Determine the correct GitHub domain based on the request path
+///
+/// Different GitHub resources require different domains:
+/// - Raw files: raw.githubusercontent.com (e.g., /owner/repo/branch/path/to/file)
+/// - Release archives: codeload.github.com (e.g., /owner/repo/zipball/v1.0.0)
+/// - Release assets: github.com (e.g., /owner/repo/releases/download/v1.0.0/file.zip)
+/// - Git archives: codeload.github.com (e.g., /owner/repo/tar.gz/main)
+fn detect_github_domain(path: &str) -> &'static str {
+    // Release download paths: /owner/repo/releases/download/...
+    if path.contains("/releases/download/") {
+        return "github.com";
+    }
+
+    // Archive formats handled by codeload:
+    // - zipball/ref: /owner/repo/zipball/v1.0.0
+    // - tarball/ref: /owner/repo/tarball/v1.0.0
+    // - tar.gz/ref: /owner/repo/tar.gz/main
+    // - zip/ref: /owner/repo/zip/main
+    if path.contains("/zipball/")
+        || path.contains("/tarball/")
+        || path.contains("/tar.gz/")
+        || path.contains("/zip/")
+    {
+        return "codeload.github.com";
+    }
+
+    // Raw file content (default for most paths)
+    "raw.githubusercontent.com"
+}
+
+/// Resolve GitHub target URI from path with optional query parameters
+///
+/// Supports various GitHub URL formats:
+/// - Raw files: /owner/repo/branch/path/to/file
+/// - Release archives: /owner/repo/zipball/tag or /owner/repo/tarball/tag
+/// - Release assets: /owner/repo/releases/download/tag/filename
+/// - Git archives: /owner/repo/tar.gz/branch or /owner/repo/zip/branch
+pub fn resolve_github_target(
+    _state: &AppState,
+    path: &str,
+    query: Option<String>,
+) -> ProxyResult<Uri> {
     let path = path.trim_start_matches('/');
 
     if path.is_empty() {
@@ -72,30 +115,45 @@ pub fn resolve_github_target(_state: &AppState, path: &str) -> ProxyResult<Uri> 
         ));
     }
 
-    // Build raw.githubusercontent.com URL (or appropriate raw domain)
+    // Parse the path to extract components
     let parts: Vec<&str> = path.splitn(4, '/').collect();
-    if parts.len() < 3 {
+    if parts.len() < 2 {
         return Err(ProxyError::InvalidTarget(
-            "Path must contain at least owner/repo/branch".to_string(),
+            "Path must contain at least owner/repo".to_string(),
         ));
     }
 
     let owner = parts[0];
     let repo = parts[1];
-    let branch = parts[2];
-    let file_path = if parts.len() > 3 { parts[3] } else { "" };
 
-    let target_path = if file_path.is_empty() {
-        format!("/{}/{}/{}", owner, repo, branch)
+    // Determine the target domain based on path content
+    let domain = detect_github_domain(path);
+
+    // Build the target path and query
+    let target_path = format!("/{}", path);
+
+    // Append query parameters if present
+    let path_with_query = if let Some(q) = query {
+        format!("{}?{}", target_path, q)
     } else {
-        format!("/{}/{}/{}/{}", owner, repo, branch, file_path)
+        target_path
     };
 
-    // Use raw.githubusercontent.com as the default raw content domain
-    // This works with all GitHub domains (github.com, enterprise domains, etc.)
-    let authority = Authority::from_static("raw.githubusercontent.com");
-    let path_and_query = PathAndQuery::from_str(&target_path)
+    // Build the authority based on detected domain
+    let authority = match domain {
+        "github.com" => Authority::from_static("github.com"),
+        "codeload.github.com" => Authority::from_static("codeload.github.com"),
+        "raw.githubusercontent.com" => Authority::from_static("raw.githubusercontent.com"),
+        _ => Authority::from_static("raw.githubusercontent.com"), // fallback
+    };
+
+    let path_and_query = PathAndQuery::from_str(&path_with_query)
         .map_err(|e| ProxyError::InvalidTarget(format!("Invalid path: {}", e)))?;
+
+    info!(
+        "GitHub target resolution - owner: {}, repo: {}, domain: {}, path: {}",
+        owner, repo, domain, path_with_query
+    );
 
     Uri::builder()
         .scheme("https")
@@ -241,6 +299,80 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_detect_github_domain_raw_files() {
+        // Raw file content should use raw.githubusercontent.com
+        assert_eq!(
+            detect_github_domain("owner/repo/main/path/to/file.txt"),
+            "raw.githubusercontent.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/develop/README.md"),
+            "raw.githubusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_detect_github_domain_release_downloads() {
+        // Release assets use github.com
+        assert_eq!(
+            detect_github_domain("owner/repo/releases/download/v1.0.0/app.zip"),
+            "github.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/releases/download/latest/binary"),
+            "github.com"
+        );
+    }
+
+    #[test]
+    fn test_detect_github_domain_zipball() {
+        // Zipball archives use codeload.github.com
+        assert_eq!(
+            detect_github_domain("owner/repo/zipball/v1.0.0"),
+            "codeload.github.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/zipball/main"),
+            "codeload.github.com"
+        );
+    }
+
+    #[test]
+    fn test_detect_github_domain_tarball() {
+        // Tarball archives use codeload.github.com
+        assert_eq!(
+            detect_github_domain("owner/repo/tarball/v2.0.0"),
+            "codeload.github.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/tarball/develop"),
+            "codeload.github.com"
+        );
+    }
+
+    #[test]
+    fn test_detect_github_domain_tar_gz() {
+        // tar.gz format uses codeload.github.com
+        assert_eq!(
+            detect_github_domain("owner/repo/tar.gz/main"),
+            "codeload.github.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/tar.gz/refs/tags/v1.0.0"),
+            "codeload.github.com"
+        );
+    }
+
+    #[test]
+    fn test_detect_github_domain_zip() {
+        // zip format uses codeload.github.com
+        assert_eq!(
+            detect_github_domain("owner/repo/zip/main"),
+            "codeload.github.com"
+        );
+    }
 
     #[test]
     fn test_convert_blob_to_raw() {

@@ -40,8 +40,9 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     pub github_config: Arc<GitHubConfig>,
     pub client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
-    /// Lazily loaded blacklist cache
-    pub blacklist_cache: Arc<OnceCell<Vec<String>>>,
+    /// Blacklist cache with hot reload support (Arc<OnceCell<Arc<RwLock<BlacklistCache>>>>)
+    pub blacklist_cache:
+        Arc<OnceCell<Arc<tokio::sync::RwLock<services::blacklist::BlacklistCache>>>>,
     /// Graceful shutdown manager
     pub shutdown_manager: shutdown::ShutdownManager,
     /// Server uptime tracker
@@ -374,9 +375,10 @@ fn resolve_target_uri_with_validation(uri: &Uri, host_guard: &GitHubConfig) -> P
 
 fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
     let path = uri.path();
+    let query = uri.query();
     debug!(
-        "resolve_fallback_target - Input URI: {}, path: '{}'",
-        uri, path
+        "resolve_fallback_target - Input URI: {}, path: '{}', query: {:?}",
+        uri, path, query
     );
 
     // Remove leading slash
@@ -409,14 +411,33 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
 
     if path.starts_with("http://") || path.starts_with("https://") {
         let converted = github::convert_github_blob_to_raw(&path);
-        return converted.parse().map_err(|e| format!("Invalid URL: {}", e));
+        // Reconstruct URI with query parameters
+        let uri_with_query = if let Some(q) = query {
+            format!("{}?{}", converted, q)
+        } else {
+            converted
+        };
+        debug!("Fallback target with query: {}", uri_with_query);
+        return uri_with_query
+            .parse()
+            .map_err(|e| format!("Invalid URL: {}", e));
     }
 
     // Check for GitHub domain paths (github.com/..., api.github.com/..., etc.)
     if is_github_domain_path(&path) {
         let full_url = format!("https://{}", path);
         let converted = github::convert_github_blob_to_raw(&full_url);
-        return converted
+        // Reconstruct URI with query parameters
+        let uri_with_query = if let Some(q) = query {
+            format!("{}?{}", converted, q)
+        } else {
+            converted
+        };
+        debug!(
+            "Fallback GitHub domain target with query: {}",
+            uri_with_query
+        );
+        return uri_with_query
             .parse()
             .map_err(|e| format!("Invalid GitHub URL: {}", e));
     }
@@ -438,6 +459,83 @@ fn is_github_domain_path(path: &str) -> bool {
 fn is_shell_script(uri: &Uri) -> bool {
     let path = uri.path();
     path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh")
+}
+
+/// Determine if compression should be disabled for a specific request URI.
+/// Compression should only be disabled for text content that we need to rewrite
+/// (shell scripts, HTML, markdown files, etc.), to preserve performance for
+/// binary downloads (archives, executables, etc.).
+fn should_disable_compression_for_request(uri: &Uri) -> bool {
+    let path = uri.path().to_lowercase();
+
+    // Shell scripts - definitely need text processing
+    if path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh") {
+        return true;
+    }
+
+    // HTML/XML files that might contain URLs
+    if path.ends_with(".html")
+        || path.ends_with(".htm")
+        || path.ends_with(".xml")
+        || path.ends_with(".xhtml")
+    {
+        return true;
+    }
+
+    // Markdown and documentation files
+    if path.ends_with(".md") || path.ends_with(".markdown") || path.ends_with(".txt") {
+        return true;
+    }
+
+    // JSON and YAML configuration files that might contain GitHub URLs
+    if path.ends_with(".json") || path.ends_with(".yaml") || path.ends_with(".yml") {
+        return true;
+    }
+
+    // Binary archives - should NOT disable compression (keep full compression benefits)
+    if path.ends_with(".tar.gz")
+        || path.ends_with(".tar")
+        || path.ends_with(".zip")
+        || path.ends_with(".7z")
+        || path.ends_with(".rar")
+    {
+        return false;
+    }
+
+    // Executables and binaries - should NOT disable compression
+    if path.ends_with(".exe")
+        || path.ends_with(".dll")
+        || path.ends_with(".so")
+        || path.ends_with(".dylib")
+        || path.ends_with(".bin")
+    {
+        return false;
+    }
+
+    // Images - should NOT disable compression (serve pre-compressed format)
+    if path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".png")
+        || path.ends_with(".gif")
+        || path.ends_with(".webp")
+        || path.ends_with(".svg")
+    {
+        return false;
+    }
+
+    // Audio/Video - should NOT disable compression
+    if path.ends_with(".mp3")
+        || path.ends_with(".mp4")
+        || path.ends_with(".webm")
+        || path.ends_with(".wav")
+        || path.ends_with(".flac")
+    {
+        return false;
+    }
+
+    // For unknown file types, don't disable compression unless we're certain
+    // we need to rewrite the content
+    false
 }
 
 #[instrument(skip_all)]
@@ -471,33 +569,14 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         .to_string();
 
     // Determine the protocol based on the request
-    // Priority: X-Forwarded-Proto > URI scheme > heuristics > default
-    let proxy_scheme = if let Some(forwarded) = req
-        .headers()
-        .get("x-forwarded-proto")
-        .and_then(|h| h.to_str().ok())
-    {
-        debug!("Using X-Forwarded-Proto: {}", forwarded);
-        forwarded.to_string()
-    } else if let Some(scheme) = req.uri().scheme_str() {
-        debug!("Using URI scheme: {}", scheme);
-        scheme.to_string()
-    } else if proxy_host.starts_with("localhost")
-        || proxy_host.contains("127.0.0.1")
-        || proxy_host.ends_with(":80")
-        || proxy_host.ends_with(":8080")
-        || proxy_host.ends_with(":3000")
-        || proxy_host.ends_with(":5000")
-    {
-        debug!("Using http for local/dev host: {}", proxy_host);
-        "http".to_string()
-    } else {
-        debug!("Using https for remote connection ({})", proxy_host);
-        "https".to_string()
-    };
+    // Priority: cf-visitor (Cloudflare) > X-Forwarded-Proto > URI scheme > heuristics > default
+    let proxy_scheme = services::request::detect_client_protocol(&req);
 
     let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
-    info!("Proxy URL determined: {}", proxy_url);
+    info!(
+        "Proxy URL determined: {} (from Cloudflare/upstream)",
+        proxy_url
+    );
 
     let client_ip = services::request::extract_client_ip(&req);
 
@@ -600,7 +679,13 @@ pub async fn proxy_request(
     let mut req = Request::from_parts(req_parts, request_body);
 
     // Sanitize and modify headers
-    let disable_compression = state.settings.shell.editor && processor.is_some();
+    // Only disable compression if shell editor is enabled AND the target is likely to contain
+    // text that needs rewriting (shell scripts, HTML, markdown, etc.)
+    let disable_compression = if state.settings.shell.editor && processor.is_some() {
+        should_disable_compression_for_request(&current_uri)
+    } else {
+        false
+    };
     sanitize_request_headers(req.headers_mut(), disable_compression);
 
     apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
@@ -630,7 +715,9 @@ pub async fn proxy_request(
         let status = response.status();
 
         // Handle redirects automatically
-        if status.is_redirection() {
+        // Note: 304 Not Modified is technically a 3xx status but is NOT a redirect
+        // It should be returned as-is without requiring a Location header
+        if status.is_redirection() && status != StatusCode::NOT_MODIFIED {
             redirect_count += 1;
 
             if redirect_count > max_redirects {
@@ -860,6 +947,9 @@ pub async fn proxy_request(
     // Fix Content-Type for common file extensions if it's missing or incorrect
     fix_content_type_header(&mut parts.headers, &target_uri);
 
+    // Apply Cloudflare CDN optimization headers for cacheable responses
+    apply_cloudflare_cache_headers(&mut parts.headers, status, &target_uri);
+
     let streaming_body = ProxyBodyStream::new(
         body.into_data_stream().boxed(),
         lifecycle,
@@ -916,6 +1006,11 @@ fn sanitize_request_headers(headers: &mut HeaderMap, disable_compression: bool) 
         // Remove compression-related headers from the request
         headers.remove(header::ACCEPT_ENCODING);
     }
+
+    // IMPORTANT: Preserve Range and Accept-Ranges headers for Cloudflare
+    // These enable efficient streaming and resumable downloads at the edge
+    // Never remove these headers - they're essential for large file downloads
+    // and Cloudflare's partial content caching strategy
 }
 
 fn should_buffer_request_body(method: &Method, headers: &HeaderMap) -> bool {
@@ -974,6 +1069,105 @@ fn sanitize_response_headers(
 
     // IMPORTANT: Keep Location header for redirects (3xx responses)
     // The Location header should be preserved as-is for proper redirect handling
+}
+
+/// Applies Cloudflare CDN optimization headers for successful 200 responses
+/// - Adds Cache-Control with s-maxage for edge node caching
+/// - Preserves ETag/Last-Modified for cache revalidation
+/// - Keeps Accept-Ranges for range requests
+/// - Maintains Accept-Encoding for compression
+fn apply_cloudflare_cache_headers(headers: &mut HeaderMap, status: StatusCode, target_uri: &Uri) {
+    if status != StatusCode::OK && status != StatusCode::PARTIAL_CONTENT {
+        return;
+    }
+
+    let path = target_uri.path();
+
+    // Determine cache duration based on content type
+    let cache_control = if is_small_file(path) {
+        // Small files (HTML, CSS, JS): long cache
+        "public, max-age=2592000, s-maxage=31536000, stale-while-revalidate=604800"
+    } else if is_archive_file(path) || is_release_asset(path) {
+        // Archives and release assets: very long cache (they're immutable by version)
+        "public, max-age=31536000, s-maxage=31536000, immutable"
+    } else if is_source_file(path) {
+        // Source code files: moderate cache
+        "public, max-age=604800, s-maxage=2592000, stale-while-revalidate=86400"
+    } else {
+        // Default: reasonable cache for other content
+        "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600"
+    };
+
+    // Only set Cache-Control if not already present (preserve original if needed)
+    if !headers.contains_key(header::CACHE_CONTROL) {
+        if let Ok(value) = HeaderValue::from_str(cache_control) {
+            headers.insert(header::CACHE_CONTROL, value);
+        }
+    }
+
+    // Ensure ETag is present for cache revalidation (if not already present)
+    if !headers.contains_key(header::ETAG) {
+        if let Some(content_length) = headers.get(header::CONTENT_LENGTH)
+            && let Ok(length_str) = content_length.to_str()
+        {
+            // Generate weak ETag from content length and last modified
+            let last_modified = headers
+                .get(header::LAST_MODIFIED)
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("0");
+            let etag = format!(
+                "W/\"{}-{}\"",
+                length_str.replace("\"", ""),
+                last_modified.replace("\"", "").replace(" ", "")
+            );
+            if let Ok(value) = HeaderValue::from_str(&etag) {
+                headers.insert(header::ETAG, value);
+            }
+        }
+    }
+
+    // Ensure Range support headers are present for large file downloads
+    if is_large_file(path) && !headers.contains_key("Accept-Ranges") {
+        headers.insert("Accept-Ranges", HeaderValue::from_static("bytes"));
+    }
+}
+
+fn is_small_file(path: &str) -> bool {
+    path.ends_with(".js")
+        || path.ends_with(".css")
+        || path.ends_with(".html")
+        || path.ends_with(".htm")
+        || path.ends_with(".json")
+        || path.ends_with(".svg")
+        || path.ends_with(".ico")
+}
+
+fn is_archive_file(path: &str) -> bool {
+    path.ends_with(".zip")
+        || path.ends_with(".tar.gz")
+        || path.ends_with(".tgz")
+        || path.ends_with(".tar")
+}
+
+fn is_release_asset(path: &str) -> bool {
+    // Release assets are typically in /releases/download/v*/
+    path.contains("/releases/download/")
+}
+
+fn is_source_file(path: &str) -> bool {
+    path.ends_with(".rs")
+        || path.ends_with(".go")
+        || path.ends_with(".py")
+        || path.ends_with(".js")
+        || path.ends_with(".ts")
+        || path.ends_with(".java")
+        || path.ends_with(".cpp")
+        || path.ends_with(".c")
+        || path.ends_with(".h")
+}
+
+fn is_large_file(path: &str) -> bool {
+    is_archive_file(path) || is_release_asset(path) || path.ends_with(".iso")
 }
 
 const PROCESSED_RESPONSE_CACHE_CONTROL: &str = "public, max-age=300, stale-while-revalidate=60";
@@ -1246,28 +1440,101 @@ fn is_github_file_host(host: &str) -> bool {
 
 /// Build CORS layer based on security configuration
 fn setup_tracing(log_config: &config::LogConfig) {
+    use std::fs;
+    use std::path::Path;
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(log_config.get_level()));
 
-    // Create stdout layer only (logs to console)
+    // Create stdout layer (logs to console)
     let stdout_layer = fmt::layer()
         .with_writer(std::io::stdout)
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false);
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(stdout_layer)
-        .init();
+    // Create file layer with rotation if log file is specified
+    let log_file_path = log_config.log_file_path.trim();
 
-    eprintln!("Logging initialized: console only");
+    if !log_file_path.is_empty() && log_file_path != "/dev/null" {
+        // Ensure the log directory exists
+        if let Some(parent) = Path::new(log_file_path).parent() {
+            if !parent.as_os_str().is_empty() {
+                match fs::create_dir_all(parent) {
+                    Ok(_) => {
+                        eprintln!("Log directory created/verified: {}", parent.display());
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to create log directory '{}': {}",
+                            parent.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        // Extract directory and file name for rotation
+        if let Some(parent) = Path::new(log_file_path).parent() {
+            let file_name = Path::new(log_file_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("gh-proxy.log");
+
+            // Create a non-blocking writer with daily rotation
+            // The rotation is based on date, not file size
+            let file_appender = tracing_appender::rolling::daily(parent, file_name);
+            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+            // Important: Keep the guard alive for the entire program lifetime
+            // Using Box::leak to prevent dropping the guard
+            let _ = Box::leak(Box::new(guard));
+
+            let file_layer = fmt::layer()
+                .with_writer(non_blocking)
+                .with_target(false)
+                .with_thread_ids(false)
+                .with_thread_names(false);
+
+            // Combine both layers (stdout + file)
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(stdout_layer)
+                .with(file_layer)
+                .init();
+
+            eprintln!(
+                "Logging initialized: console + file logging to {} (daily rotation, max size: {} MB per file)",
+                log_file_path, log_config.max_log_size
+            );
+        } else {
+            // If parent directory cannot be determined, fall back to stdout only
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(stdout_layer)
+                .init();
+
+            eprintln!(
+                "Warning: Could not determine log directory from path '{}', using console only",
+                log_file_path
+            );
+        }
+    } else {
+        // If no log file is specified, use stdout only
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stdout_layer)
+            .init();
+
+        eprintln!("Logging initialized: console only");
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::{ProxyConfig, ServerConfig};
 
     #[test]
     fn detects_html_like_content_type() {
@@ -1285,5 +1552,354 @@ mod tests {
             &uri,
             false
         ));
+    }
+
+    // ============================================================================
+    // Integration tests for resolve_fallback_target with query parameters
+    // ============================================================================
+
+    #[test]
+    fn test_resolve_fallback_target_raw_url_with_query() {
+        // Test that query parameters are preserved when resolving fallback target
+        // Note: resolve_fallback_target is called with proxy paths like /https://...
+        let uri: Uri = "/https://raw.githubusercontent.com/owner/repo/main/file.txt?token=abc123"
+            .parse()
+            .unwrap();
+        let result = resolve_fallback_target(&uri).expect("Should parse valid URL");
+        assert_eq!(result.host(), Some("raw.githubusercontent.com"));
+        assert_eq!(result.path(), "/owner/repo/main/file.txt");
+        assert_eq!(result.query(), Some("token=abc123"));
+    }
+
+    #[test]
+    fn test_resolve_fallback_target_github_url_with_query() {
+        // Test that query parameters are preserved for GitHub URLs
+        // When accessed through proxy, the URL looks like /raw.githubusercontent.com/owner/repo/main/README.md?v=1
+        let uri: Uri = "/raw.githubusercontent.com/owner/repo/main/README.md?v=1&format=json"
+            .parse()
+            .unwrap();
+        let result = resolve_fallback_target(&uri).expect("Should parse valid URL");
+        assert_eq!(result.host(), Some("raw.githubusercontent.com"));
+        assert_eq!(result.query(), Some("v=1&format=json"));
+    }
+
+    #[test]
+    fn test_resolve_fallback_target_blob_url_with_query() {
+        // Test blob URLs with query parameters
+        // Through proxy: /github.com/owner/repo/blob/main/file.js?plain=1&ts=4
+        let uri: Uri = "/github.com/owner/repo/blob/main/file.js?plain=1&ts=4"
+            .parse()
+            .unwrap();
+        let result = resolve_fallback_target(&uri).expect("Should parse valid URL");
+        assert_eq!(result.host(), Some("raw.githubusercontent.com"));
+        assert_eq!(result.path(), "/owner/repo/main/file.js");
+        assert_eq!(result.query(), Some("plain=1&ts=4"));
+    }
+
+    #[test]
+    fn test_resolve_fallback_target_with_complex_query() {
+        // Test with multiple query parameters and special characters
+        // Through proxy: /api.github.com/repos/owner/repo/contents/file.txt?ref=main...
+        let uri: Uri = "/api.github.com/repos/owner/repo/contents/file.txt?ref=main&client_id=123&client_secret=secret"
+            .parse()
+            .unwrap();
+        let result = resolve_fallback_target(&uri).expect("Should parse valid URL");
+        assert_eq!(
+            result.query(),
+            Some("ref=main&client_id=123&client_secret=secret")
+        );
+    }
+
+    #[test]
+    fn test_resolve_fallback_target_without_query() {
+        // Test URL without query parameters should work normally
+        // Through proxy: /raw.githubusercontent.com/owner/repo/main/file.txt
+        let uri: Uri = "/raw.githubusercontent.com/owner/repo/main/file.txt"
+            .parse()
+            .unwrap();
+        let result = resolve_fallback_target(&uri).expect("Should parse valid URL");
+        assert_eq!(result.host(), Some("raw.githubusercontent.com"));
+        assert_eq!(result.query(), None);
+    }
+
+    #[test]
+    fn test_resolve_fallback_target_malformed_https_url() {
+        // Test fix for malformed https:/ URL
+        let uri: Uri = "/https:/raw.githubusercontent.com/owner/repo/main/file.txt"
+            .parse()
+            .unwrap();
+        let result = resolve_fallback_target(&uri).expect("Should handle malformed URLs");
+        assert_eq!(result.host(), Some("raw.githubusercontent.com"));
+    }
+
+    // ============================================================================
+    // Tests for github::resolve_github_target path resolution
+    // These tests use a mock AppState to avoid requiring full configuration setup
+    // ============================================================================
+
+    fn create_mock_app_state() -> AppState {
+        AppState {
+            settings: Arc::new(config::Settings {
+                server: ServerConfig::default(),
+                proxy: ProxyConfig::default(),
+                shell: config::ShellConfig::default(),
+                log: config::LogConfig::default(),
+                auth: config::AuthConfig::default(),
+                blacklist: config::BlacklistConfig::default(),
+            }),
+            github_config: Arc::new(GitHubConfig::new("", &ProxyConfig::default())),
+            client: services::client::build_client(&ServerConfig::default()),
+            blacklist_cache: Arc::new(OnceCell::new()),
+            shutdown_manager: shutdown::ShutdownManager::new(),
+            uptime_tracker: Arc::new(shutdown::UptimeTracker::new()),
+        }
+    }
+
+    #[test]
+    fn test_github_path_raw_file() {
+        // Test /github/owner/repo/branch/path/to/file
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(&state, "owner/repo/main/README.md", None)
+            .expect("Should resolve raw file path");
+
+        assert_eq!(result.host(), Some("raw.githubusercontent.com"));
+        assert_eq!(result.path(), "/owner/repo/main/README.md");
+    }
+
+    #[test]
+    fn test_github_path_with_query_params() {
+        // Test /github/ path with query parameters
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(
+            &state,
+            "owner/repo/main/file.txt",
+            Some("token=abc123&ref=develop".to_string()),
+        )
+        .expect("Should resolve with query params");
+
+        assert_eq!(result.host(), Some("raw.githubusercontent.com"));
+        assert_eq!(result.query(), Some("token=abc123&ref=develop"));
+    }
+
+    #[test]
+    fn test_github_path_zipball() {
+        // Test zipball archive path resolution
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(&state, "owner/repo/zipball/v1.0.0", None)
+            .expect("Should resolve zipball path");
+
+        // zipball should use codeload.github.com
+        assert_eq!(result.host(), Some("codeload.github.com"));
+        assert_eq!(result.path(), "/owner/repo/zipball/v1.0.0");
+    }
+
+    #[test]
+    fn test_github_path_release_download() {
+        // Test release download path
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(
+            &state,
+            "owner/repo/releases/download/v1.0.0/app.zip",
+            None,
+        )
+        .expect("Should resolve release download path");
+
+        // Release downloads should use github.com
+        assert_eq!(result.host(), Some("github.com"));
+        assert_eq!(
+            result.path(),
+            "/owner/repo/releases/download/v1.0.0/app.zip"
+        );
+    }
+
+    #[test]
+    fn test_github_path_tarball() {
+        // Test tarball archive path
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(&state, "owner/repo/tarball/main", None)
+            .expect("Should resolve tarball path");
+
+        assert_eq!(result.host(), Some("codeload.github.com"));
+        assert_eq!(result.path(), "/owner/repo/tarball/main");
+    }
+
+    #[test]
+    fn test_github_path_tar_gz() {
+        // Test tar.gz archive path
+        let state = create_mock_app_state();
+        let result =
+            github::resolve_github_target(&state, "owner/repo/tar.gz/refs/tags/v2.0.0", None)
+                .expect("Should resolve tar.gz path");
+
+        assert_eq!(result.host(), Some("codeload.github.com"));
+        assert_eq!(result.path(), "/owner/repo/tar.gz/refs/tags/v2.0.0");
+    }
+
+    #[test]
+    fn test_github_path_release_download_with_query() {
+        // Test release download with query parameters
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(
+            &state,
+            "owner/repo/releases/download/v1.0.0/app-x64.exe",
+            Some("redirect=false".to_string()),
+        )
+        .expect("Should resolve with query params");
+
+        assert_eq!(result.host(), Some("github.com"));
+        assert_eq!(result.query(), Some("redirect=false"));
+    }
+
+    #[test]
+    fn test_github_path_invalid_empty() {
+        // Test invalid path (empty)
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(&state, "", None);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_github_path_zip_format() {
+        // Test zip archive format (should use codeload)
+        let state = create_mock_app_state();
+        let result = github::resolve_github_target(&state, "owner/repo/zip/main", None)
+            .expect("Should resolve zip path");
+
+        assert_eq!(result.host(), Some("codeload.github.com"));
+        assert_eq!(result.path(), "/owner/repo/zip/main");
+    }
+
+    // ============================================================================
+    // Tests for Cloudflare CDN optimization headers
+    // ============================================================================
+
+    #[test]
+    fn test_cloudflare_cache_headers_for_small_files() {
+        // Test that small files (JS, CSS) get long cache headers
+        let mut headers = HeaderMap::new();
+        let uri: Uri = "/owner/repo/main/script.js".parse().unwrap();
+        apply_cloudflare_cache_headers(&mut headers, StatusCode::OK, &uri);
+
+        let cache_control = headers
+            .get(header::CACHE_CONTROL)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        assert!(cache_control.contains("max-age=2592000"));
+        assert!(cache_control.contains("s-maxage=31536000"));
+    }
+
+    #[test]
+    fn test_cloudflare_cache_headers_for_archives() {
+        // Test that archive files get immutable cache headers
+        let mut headers = HeaderMap::new();
+        let uri: Uri = "/owner/repo/releases/download/v1.0.0/app.zip"
+            .parse()
+            .unwrap();
+        apply_cloudflare_cache_headers(&mut headers, StatusCode::OK, &uri);
+
+        let cache_control = headers
+            .get(header::CACHE_CONTROL)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        assert!(cache_control.contains("immutable"));
+        assert!(cache_control.contains("max-age=31536000"));
+    }
+
+    #[test]
+    fn test_cloudflare_cache_headers_only_for_200() {
+        // Test that cache headers are not applied to non-200 responses
+        let mut headers = HeaderMap::new();
+        let uri: Uri = "/owner/repo/main/script.js".parse().unwrap();
+        apply_cloudflare_cache_headers(&mut headers, StatusCode::NOT_FOUND, &uri);
+
+        assert!(!headers.contains_key(header::CACHE_CONTROL));
+    }
+
+    #[test]
+    fn test_detect_client_protocol_from_cf_visitor() {
+        // Test Cloudflare cf-visitor header detection
+        let (mut parts, _) = Request::builder()
+            .uri("http://example.com/")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+
+        parts.headers.insert(
+            "cf-visitor",
+            HeaderValue::from_static(r#"{"scheme":"https"}"#),
+        );
+        let req = Request::from_parts(parts, Body::empty());
+
+        let protocol = services::request::detect_client_protocol(&req);
+        assert_eq!(protocol, "https");
+    }
+
+    #[test]
+    fn test_detect_client_protocol_from_x_forwarded() {
+        // Test X-Forwarded-Proto fallback detection
+        let (mut parts, _) = Request::builder()
+            .uri("http://example.com/")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+
+        parts
+            .headers
+            .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let req = Request::from_parts(parts, Body::empty());
+
+        let protocol = services::request::detect_client_protocol(&req);
+        assert_eq!(protocol, "https");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_cf_connecting_ip() {
+        // Test Cloudflare cf-connecting-ip header priority
+        let (mut parts, _) = Request::builder()
+            .uri("http://example.com/")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+
+        parts
+            .headers
+            .insert("cf-connecting-ip", HeaderValue::from_static("192.0.2.100"));
+        parts
+            .headers
+            .insert("x-forwarded-for", HeaderValue::from_static("10.0.0.1"));
+        let req = Request::from_parts(parts, Body::empty());
+
+        let ip = services::request::extract_client_ip(&req);
+        // cf-connecting-ip should take priority
+        assert_eq!(ip, Some("192.0.2.100".to_string()));
+    }
+
+    #[test]
+    fn test_preserve_range_headers_in_request() {
+        // Test that Range and Accept-Ranges headers are preserved for range requests
+        // This ensures Cloudflare can do partial content caching and resumable downloads
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1023"));
+        headers.insert("accept-encoding", HeaderValue::from_static("gzip"));
+
+        let headers_before = headers.clone();
+        sanitize_request_headers(&mut headers, false);
+
+        // Range header should be preserved
+        assert_eq!(
+            headers.get(header::RANGE),
+            headers_before.get(header::RANGE)
+        );
+        // Accept-Encoding should be preserved when compression not disabled
+        assert_eq!(
+            headers.get("accept-encoding"),
+            headers_before.get("accept-encoding")
+        );
     }
 }
