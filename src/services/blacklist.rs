@@ -58,10 +58,10 @@ impl BlacklistCache {
                 self.rules = new_rules;
 
                 // Update modification time
-                if let Ok(metadata) = std::fs::metadata(&config.blacklist_file) {
-                    if let Ok(mtime) = metadata.modified() {
-                        self.last_modified = Some(mtime);
-                    }
+                if let Ok(metadata) = std::fs::metadata(&config.blacklist_file)
+                    && let Ok(mtime) = metadata.modified()
+                {
+                    self.last_modified = Some(mtime);
                 }
 
                 if old_count == 0 {

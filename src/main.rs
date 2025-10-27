@@ -1099,30 +1099,29 @@ fn apply_cloudflare_cache_headers(headers: &mut HeaderMap, status: StatusCode, t
     };
 
     // Only set Cache-Control if not already present (preserve original if needed)
-    if !headers.contains_key(header::CACHE_CONTROL) {
-        if let Ok(value) = HeaderValue::from_str(cache_control) {
-            headers.insert(header::CACHE_CONTROL, value);
-        }
+    if !headers.contains_key(header::CACHE_CONTROL)
+        && let Ok(value) = HeaderValue::from_str(cache_control)
+    {
+        headers.insert(header::CACHE_CONTROL, value);
     }
 
     // Ensure ETag is present for cache revalidation (if not already present)
-    if !headers.contains_key(header::ETAG) {
-        if let Some(content_length) = headers.get(header::CONTENT_LENGTH)
-            && let Ok(length_str) = content_length.to_str()
-        {
-            // Generate weak ETag from content length and last modified
-            let last_modified = headers
-                .get(header::LAST_MODIFIED)
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or("0");
-            let etag = format!(
-                "W/\"{}-{}\"",
-                length_str.replace("\"", ""),
-                last_modified.replace("\"", "").replace(" ", "")
-            );
-            if let Ok(value) = HeaderValue::from_str(&etag) {
-                headers.insert(header::ETAG, value);
-            }
+    if !headers.contains_key(header::ETAG)
+        && let Some(content_length) = headers.get(header::CONTENT_LENGTH)
+        && let Ok(length_str) = content_length.to_str()
+    {
+        // Generate weak ETag from content length and last modified
+        let last_modified = headers
+            .get(header::LAST_MODIFIED)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("0");
+        let etag = format!(
+            "W/\"{}-{}\"",
+            length_str.replace("\"", ""),
+            last_modified.replace("\"", "").replace(" ", "")
+        );
+        if let Ok(value) = HeaderValue::from_str(&etag) {
+            headers.insert(header::ETAG, value);
         }
     }
 
@@ -1459,19 +1458,19 @@ fn setup_tracing(log_config: &config::LogConfig) {
 
     if !log_file_path.is_empty() && log_file_path != "/dev/null" {
         // Ensure the log directory exists
-        if let Some(parent) = Path::new(log_file_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                match fs::create_dir_all(parent) {
-                    Ok(_) => {
-                        eprintln!("Log directory created/verified: {}", parent.display());
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: Failed to create log directory '{}': {}",
-                            parent.display(),
-                            e
-                        );
-                    }
+        if let Some(parent) = Path::new(log_file_path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            match fs::create_dir_all(parent) {
+                Ok(_) => {
+                    eprintln!("Log directory created/verified: {}", parent.display());
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to create log directory '{}': {}",
+                        parent.display(),
+                        e
+                    );
                 }
             }
         }
