@@ -1,6 +1,4 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
@@ -1063,49 +1061,6 @@ fn sanitize_response_headers(
 
     // IMPORTANT: Keep Location header for redirects (3xx responses)
     // The Location header should be preserved as-is for proper redirect handling
-}
-
-/// Applies Cloudflare CDN optimization headers for successful 200 responses
-/// - Adds Cache-Control with s-maxage for edge node caching
-/// - Preserves ETag/Last-Modified for cache revalidation
-/// - Keeps Accept-Ranges for range requests
-/// - Maintains Accept-Encoding for compression
-fn is_small_file(path: &str) -> bool {
-    path.ends_with(".js")
-        || path.ends_with(".css")
-        || path.ends_with(".html")
-        || path.ends_with(".htm")
-        || path.ends_with(".json")
-        || path.ends_with(".svg")
-        || path.ends_with(".ico")
-}
-
-fn is_archive_file(path: &str) -> bool {
-    path.ends_with(".zip")
-        || path.ends_with(".tar.gz")
-        || path.ends_with(".tgz")
-        || path.ends_with(".tar")
-}
-
-fn is_release_asset(path: &str) -> bool {
-    // Release assets are typically in /releases/download/v*/
-    path.contains("/releases/download/")
-}
-
-fn is_source_file(path: &str) -> bool {
-    path.ends_with(".rs")
-        || path.ends_with(".go")
-        || path.ends_with(".py")
-        || path.ends_with(".js")
-        || path.ends_with(".ts")
-        || path.ends_with(".java")
-        || path.ends_with(".cpp")
-        || path.ends_with(".c")
-        || path.ends_with(".h")
-}
-
-fn is_large_file(path: &str) -> bool {
-    is_archive_file(path) || is_release_asset(path) || path.ends_with(".iso")
 }
 
 fn fix_content_type_header(headers: &mut HeaderMap, target_uri: &Uri) {
