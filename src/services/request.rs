@@ -112,16 +112,14 @@ pub fn detect_client_protocol(req: &Request<axum::body::Body>) -> String {
     // Heuristics: check Host header and connection info
     if let Some(host) = req.headers().get("host")
         && let Ok(host_str) = host.to_str()
-    {
-        if host_str.starts_with("localhost")
+        && (host_str.starts_with("localhost")
             || host_str.contains("127.0.0.1")
             || host_str.ends_with(":80")
             || host_str.ends_with(":8080")
             || host_str.ends_with(":3000")
-            || host_str.ends_with(":5000")
-        {
-            return "http".to_string();
-        }
+            || host_str.ends_with(":5000"))
+    {
+        return "http".to_string();
     }
 
     // Default to https for remote connections
