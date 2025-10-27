@@ -8,6 +8,7 @@ const toast = document.getElementById('toast');
 const githubLinkError = document.getElementById('githubLinkError');
 const formatToggle = document.getElementById('format-toggle');
 const slider = document.querySelector('.segmented-control__slider');
+const clearInputButton = document.getElementById('clearInputButton');
 
 function showToast(message) {
     const toastMessage = document.getElementById('toastMessage');
@@ -16,6 +17,14 @@ function showToast(message) {
     setTimeout(() => {
         toast.classList.remove('toast--visible');
     }, 3000);
+}
+
+function updateClearButtonVisibility() {
+    if (githubLinkInput.value.trim()) {
+        clearInputButton.classList.add('visible');
+    } else {
+        clearInputButton.classList.remove('visible');
+    }
 }
 
 function generateOutput(userInput, format) {
@@ -98,6 +107,16 @@ githubForm.addEventListener('submit', function (e) {
     handleFormAction();
 });
 
+clearInputButton.addEventListener('click', function (e) {
+    e.preventDefault();
+    githubLinkInput.value = '';
+    updateClearButtonVisibility();
+    githubLinkError.textContent = '';
+    githubLinkError.classList.remove('text-field__error--visible');
+    output.style.display = 'none';
+    githubLinkInput.focus();
+});
+
 formatToggle.addEventListener('click', (e) => {
     const button = e.target.closest('button');
     if (!button || button.classList.contains('active')) return;
@@ -112,6 +131,7 @@ formatToggle.addEventListener('click', (e) => {
 githubLinkInput.addEventListener('input', () => {
     githubLinkError.textContent = '';
     githubLinkError.classList.remove('text-field__error--visible');
+    updateClearButtonVisibility();
 });
 
 copyButton.addEventListener('click', function () {
@@ -246,4 +266,5 @@ function fetchAllApis() {
 document.addEventListener('DOMContentLoaded', () => {
     fetchAllApis();
     initSlider();
+    updateClearButtonVisibility();
 });
