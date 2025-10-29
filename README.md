@@ -1,7 +1,7 @@
 # GitHub 文件代理加速器 (gh-proxy)
 
 [![CI](https://github.com/vansour/gh-proxy/workflows/CI/badge.svg)](https://github.com/vansour/gh-proxy/actions)
-[![Rust](https://img.shields.io/badge/Rust-1.48.0-orange)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.93.0-orange)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Supported-blue)](Dockerfile)
 
@@ -16,12 +16,11 @@
 - **黑名单功能**: 支持 IP 和用户黑名单，增强安全性
 - **graceful shutdown**: 优雅关闭，确保请求完成
 - **日志系统**: 完整的日志记录和追踪功能
-- **Cloudflare CDN 优化**: 协议检测、客户端 IP 提取、范围请求支持
 - **Docker 支持**: 开箱即用的 Docker 部署
 
 ## 📋 系统要求
 
-- Rust 1.48.0+（本地构建）
+- Rust 1.93.0+（本地构建）
 - Docker（Docker 部署）
 - Linux/macOS/Windows（开发环境）
 
@@ -78,16 +77,12 @@ cargo build --release
 host = "0.0.0.0"           # 监听地址
 port = 8080                # 监听端口
 sizeLimit = 2048           # 文件大小限制 (MB)
-connectTimeoutSeconds = 30 # 回源连接超时 (秒, 0 表示关闭)
-keepAliveSeconds = 90      # 与回源保持连接时长 (秒, 0 表示关闭)
-poolMaxIdlePerHost = 8     # 每个源站的最大空闲连接数
 
 [shell]
 editor = true              # 是否启用编辑器
 
 [log]
 logFilePath = "/app/logs/gh-proxy.log"  # 日志文件路径
-maxLogSize = 5             # 最大日志大小 (MB)
 level = "info"             # 日志级别: debug, info, warn, error, none
 
 [auth]
@@ -138,6 +133,7 @@ GET /healthz
 ```json
 {
   "state": "Ready",
+  "version": "1.0.5",
   "active_requests": 0,
   "uptime_secs": 1000,
   "accepting_requests": true
@@ -152,11 +148,27 @@ gh-proxy/
 │   ├── main.rs           # 应用入口
 │   ├── api.rs            # API 路由定义
 │   ├── config.rs         # 配置管理
-│   ├── github.rs         # GitHub 交互
-│   ├── shutdown.rs       # 优雅关闭
 │   ├── handlers/         # HTTP 处理器
+│   │   ├── mod.rs
+│   │   ├── files.rs      # 文件下载处理
+│   │   └── health.rs     # 健康检查处理
+│   ├── infra/            # 基础设施
+│   │   ├── mod.rs
+│   │   └── log.rs        # 日志配置
+│   ├── providers/        # 数据提供者
+│   │   ├── mod.rs
+│   │   └── github.rs     # GitHub 交互
 │   ├── services/         # 业务逻辑服务
+│   │   ├── mod.rs
+│   │   ├── blacklist.rs  # 黑名单服务
+│   │   ├── client.rs     # HTTP 客户端
+│   │   ├── request.rs    # 请求处理
+│   │   └── shutdown.rs   # 优雅关闭
 │   └── utils/            # 工具函数
+│       ├── mod.rs
+│       ├── errors.rs     # 错误处理
+│       ├── regex.rs      # 正则表达式工具
+│       └── url.rs        # URL 处理工具
 ├── web/                  # Web UI 资源
 │   ├── index.html        # HTML 页面
 │   ├── script.js         # JavaScript 脚本
@@ -165,58 +177,11 @@ gh-proxy/
 │   ├── config.toml       # 主配置文件
 │   └── blacklist.json    # 黑名单配置
 ├── Cargo.toml            # Rust 项目配置
+├── Cargo.lock            # 依赖版本锁定
 ├── Dockerfile            # Docker 镜像定义
 ├── compose.yml           # Docker Compose 配置
-└── README.md            # 本文件
+└── README.md             # 本文件
 ```
-
-## 📦 核心依赖
-
-- **axum**: 现代 Rust Web 框架
-- **tokio**: 异步运行时
-- **hyper**: HTTP 客户端库
-- **serde**: 数据序列化框架
-- **tracing**: 日志和追踪
-
-更多依赖详见 `Cargo.toml`。
-
-## ☁️ Cloudflare CDN 优化
-
-### 协议检测 (Cloudflare 感知)
-
-智能检测请求协议，支持 Cloudflare 特定头：
-
-| 优先级 | 头字段 | 说明 |
-|------|-------|------|
-| 1 | `cf-visitor` | Cloudflare 访问者协议 (`{"scheme":"https"}`) |
-| 2 | `X-Forwarded-Proto` | 标准代理协议头 |
-| 3 | URI scheme | 请求 URI 中的协议 |
-| 4 | 启发式判断 | 根据主机名和端口 |
-
-### 客户端 IP 提取 (Cloudflare 优先)
-
-准确识别真实客户端 IP，优先级顺序：
-
-| 优先级 | 头字段 | 说明 |
-|------|-------|------|
-| 1 | `cf-connecting-ip` | Cloudflare 连接 IP |
-| 2 | `X-Forwarded-For` | 代理链 IP |
-| 3 | `Forwarded` | RFC 7239 标准头 |
-| 4 | `True-Client-IP` | Akamai/CF 备用 |
-| 5 | `X-Real-IP` | nginx/reverse proxy |
-| 6 | 连接信息 | 直接连接的源 IP |
-
-### 范围请求支持
-
-- 保留 `Range` 和 `Accept-Ranges` 头
-- 支持断点续传和分块下载
-- Cloudflare 可缓存部分内容 (206 Partial Content)
-
-### 性能提示
-
-- 范围请求支持让大文件下载可在边缘节点恢复
-- 所有缓存策略应在 Cloudflare 仪表板中配置
-- 禁用服务器端的 Cache-Control 头可减少头部大小并简化缓存管理
 
 ## 🔧 开发指南
 
@@ -245,12 +210,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo build --release
 ```
 
-### 自动格式化
 
-可以使用以下命令自动格式化代码：
-
-```bash
-cargo fmt --all
 ```
 
 ## 📝 许可证
