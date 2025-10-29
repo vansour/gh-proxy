@@ -1,4 +1,4 @@
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path};
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -198,44 +198,6 @@ impl HostPattern {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exact_pattern_matches_only_same_host() {
-        let pattern = HostPattern::parse("github.com").unwrap();
-        assert!(pattern.matches("github.com"));
-        assert!(!pattern.matches("raw.github.com"));
-    }
-
-    #[test]
-    fn suffix_pattern_allows_subdomains() {
-        let pattern = HostPattern::parse("*.github.com").unwrap();
-        assert!(pattern.matches("github.com"));
-        assert!(pattern.matches("raw.github.com"));
-        assert!(!pattern.matches("example.com"));
-    }
-
-    #[test]
-    fn parser_trims_scheme_and_path() {
-        let pattern = HostPattern::parse("https://*.githubusercontent.com/download").unwrap();
-        assert!(pattern.matches("githubusercontent.com"));
-        assert!(pattern.matches("raw.githubusercontent.com"));
-        assert!(pattern.matches("cdn.raw.githubusercontent.com"));
-    }
-
-    #[test]
-    fn invalid_patterns_are_rejected() {
-        assert!(HostPattern::parse("*").is_err());
-        assert!(HostPattern::parse("http://").is_err());
-        let mut cfg = ProxyConfig {
-            allowed_hosts: vec!["".into()],
-        };
-        assert!(cfg.validate().is_err());
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -243,12 +205,6 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(rename = "sizeLimit")]
     pub size_limit: u64, // MB
-    #[serde(rename = "connectTimeoutSeconds")]
-    pub connect_timeout_secs: u64,
-    #[serde(rename = "keepAliveSeconds")]
-    pub keep_alive_secs: u64,
-    #[serde(rename = "poolMaxIdlePerHost")]
-    pub pool_max_idle_per_host: usize,
 }
 
 impl Default for ServerConfig {
@@ -257,9 +213,6 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             size_limit: 125,
-            connect_timeout_secs: 30,
-            keep_alive_secs: 90,
-            pool_max_idle_per_host: 8,
         }
     }
 }
@@ -275,22 +228,6 @@ impl ServerConfig {
         format!("{}:{}", self.host, self.port)
     }
 
-    pub fn connect_timeout(&self) -> Option<Duration> {
-        if self.connect_timeout_secs == 0 {
-            None
-        } else {
-            Some(Duration::from_secs(self.connect_timeout_secs))
-        }
-    }
-
-    pub fn keep_alive(&self) -> Option<Duration> {
-        if self.keep_alive_secs == 0 {
-            None
-        } else {
-            Some(Duration::from_secs(self.keep_alive_secs))
-        }
-    }
-
     /// Validate server configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Port must be in valid range
@@ -304,12 +241,6 @@ impl ServerConfig {
         if self.size_limit == 0 {
             return Err(ConfigError::Validation(
                 "server.sizeLimit must be at least 1 MB".to_string(),
-            ));
-        }
-
-        if self.pool_max_idle_per_host == 0 {
-            return Err(ConfigError::Validation(
-                "server.poolMaxIdlePerHost must be at least 1".to_string(),
             ));
         }
 

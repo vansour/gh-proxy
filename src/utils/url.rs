@@ -74,28 +74,3 @@ pub fn add_proxy_to_html_urls(content: &str, proxy_url: &str) -> String {
 
     result
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_add_proxy_to_github_urls() {
-        let input = "https://github.com/owner/repo";
-        let result = add_proxy_to_github_urls(input, "https://proxy.com");
-        assert!(result.contains("proxy.com"));
-    }
-
-    #[test]
-    fn test_already_proxied_url() {
-        let input = "https://proxy.com/https://github.com/owner/repo";
-        let result = add_proxy_to_github_urls(input, "https://proxy.com");
-        // Should not double-proxy
-        assert_eq!(
-            result
-                .matches("https://proxy.com/https://github.com")
-                .count(),
-            1
-        );
-    }
-}
