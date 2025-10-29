@@ -1,6 +1,5 @@
 use std::{fs, path::Path};
 
-use tracing_appender;
 use tracing_subscriber::fmt::time::LocalTime;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -37,8 +36,8 @@ pub fn setup_tracing(log_config: &crate::config::LogConfig) {
     }
 
     // Ensure parent directory exists
-    if let Some(parent) = Path::new(log_file_path).parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = Path::new(log_file_path).parent()
+        && !parent.as_os_str().is_empty() {
             if let Err(e) = fs::create_dir_all(parent) {
                 eprintln!(
                     "Warning: Failed to create log directory '{}': {}",
@@ -49,7 +48,6 @@ pub fn setup_tracing(log_config: &crate::config::LogConfig) {
                 eprintln!("Log directory created/verified: {}", parent.display());
             }
         }
-    }
 
     // Derive directory and file stem for rolling appender
     let parent = Path::new(log_file_path)
