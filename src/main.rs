@@ -1,11 +1,3 @@
-use std::{
-    net::SocketAddr,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-    time::Duration,
-};
-
 use axum::{
     Router,
     body::Body,
@@ -20,69 +12,58 @@ use http_body_util::BodyExt;
 use hyper::{body::Incoming, header};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
+use std::{
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 use tokio::signal;
 use tokio::sync::OnceCell;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, instrument, warn};
-
 mod api;
 mod config;
-mod github;
 mod handlers;
-mod log;
+mod infra;
+mod providers;
 mod services;
-mod shutdown;
 mod utils;
-
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<Settings>,
     pub github_config: Arc<GitHubConfig>,
     pub client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
-    /// Blacklist cache with hot reload support (Arc<OnceCell<Arc<RwLock<BlacklistCache>>>>)
     pub blacklist_cache:
         Arc<OnceCell<Arc<tokio::sync::RwLock<services::blacklist::BlacklistCache>>>>,
-    /// Graceful shutdown manager
-    pub shutdown_manager: shutdown::ShutdownManager,
-    /// Server uptime tracker
-    pub uptime_tracker: Arc<shutdown::UptimeTracker>,
+    pub shutdown_manager: services::shutdown::ShutdownManager,
+    pub uptime_tracker: Arc<services::shutdown::UptimeTracker>,
 }
-
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
     #[error("unsupported target host: {0}")]
     UnsupportedHost(String),
-
     #[error("invalid target uri: {0}")]
     InvalidTarget(String),
-
     #[error("access denied: {0}")]
     AccessDenied(String),
-
     #[error("file size exceeds limit: {0} MB > {1} MB")]
     SizeExceeded(u64, u64),
-
     #[error("invalid GitHub URL: {0}")]
     InvalidGitHubUrl(String),
-
     #[error("GitHub web page, not a file: {0}")]
     GitHubWebPage(String),
-
     #[error("GitHub repository homepage not supported: {0}")]
     GitHubRepoHomepage(String),
-
     #[error("http error: {0}")]
     Http(#[from] Box<dyn std::error::Error + Send + Sync>),
-
     #[error("http builder error: {0}")]
     HttpBuilder(#[from] http::Error),
-
     #[error("failed to process response: {0}")]
     ProcessingError(String),
 }
-
 impl ProxyError {
-    /// Convert ProxyError to HTTP status code
     pub fn to_status_code(&self) -> StatusCode {
         match self {
             ProxyError::AccessDenied(_) => StatusCode::FORBIDDEN,
@@ -97,8 +78,6 @@ impl ProxyError {
             ProxyError::HttpBuilder(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
-
-    /// Convert ProxyError to user-friendly error message
     pub fn to_user_message(&self) -> String {
         match self {
             ProxyError::AccessDenied(ip) => format!(
@@ -129,29 +108,23 @@ impl ProxyError {
         }
     }
 }
-
 pub type ProxyResult<T> = Result<T, ProxyError>;
-
 #[derive(Clone)]
 pub enum ResponsePostProcessor {
     ShellEditor { proxy_url: Arc<str> },
 }
-
 struct RequestLifecycle {
-    shutdown: shutdown::ShutdownManager,
+    shutdown: services::shutdown::ShutdownManager,
     completed: bool,
 }
-
 impl RequestLifecycle {
     fn new(state: &AppState) -> Self {
         state.shutdown_manager.request_started();
-
         Self {
             shutdown: state.shutdown_manager.clone(),
             completed: false,
         }
     }
-
     fn success(&mut self) {
         if self.completed {
             return;
@@ -159,17 +132,14 @@ impl RequestLifecycle {
         self.shutdown.request_completed();
         self.completed = true;
     }
-
     fn fail(&mut self, _error: Option<&ProxyError>) {
         if self.completed {
             return;
         }
-
         self.shutdown.request_completed();
         self.completed = true;
     }
 }
-
 impl Drop for RequestLifecycle {
     fn drop(&mut self) {
         if !self.completed {
@@ -177,14 +147,10 @@ impl Drop for RequestLifecycle {
         }
     }
 }
-
-/// Convert ProxyError to HTTP Response
 fn error_response(error: ProxyError) -> Response<Body> {
     let status = error.to_status_code();
     let message = error.to_user_message();
-
     error!("Returning error response: {} - {}", status, error);
-
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -194,21 +160,13 @@ fn error_response(error: ProxyError) -> Response<Body> {
             Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::from("Internal Server Error"))
-                .unwrap_or_else(|_| {
-                    // This should never happen, but if it does, return a basic response
-                    Response::new(Body::from("Internal Server Error"))
-                })
+                .unwrap_or_else(|_| Response::new(Body::from("Internal Server Error")))
         })
 }
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::load()?;
-
-    // Setup tracing with log configuration
-    log::setup_tracing(&settings.log);
-
-    // Log configuration info
+    infra::log::setup_tracing(&settings.log);
     info!("Starting gh-proxy server");
     info!("Log level: {}", settings.log.get_level());
     info!(
@@ -219,15 +177,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Shell editor mode enabled");
     }
     info!("CORS: Enabled (allowing all origins)");
-
     let bind_addr: SocketAddr = settings.server.bind_addr().parse()?;
     let client = services::client::build_client(&settings.server);
-
     let github_config = GitHubConfig::new(&settings.auth.token, &settings.proxy);
-
-    // Create shutdown manager and uptime tracker
-    let shutdown_manager = shutdown::ShutdownManager::new();
-    let uptime_tracker = Arc::new(shutdown::UptimeTracker::new());
+    let shutdown_manager = services::shutdown::ShutdownManager::new();
+    let uptime_tracker = Arc::new(services::shutdown::UptimeTracker::new());
     let app_state = AppState {
         settings: Arc::new(settings),
         github_config: Arc::new(github_config),
@@ -236,31 +190,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_manager,
         uptime_tracker,
     };
-
-    // 配置 CORS - 允许跨域访问
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any)
         .expose_headers(Any);
-
     let app = Router::new()
-        .route("/", get(handlers::static_files::index))
+        .route("/", get(handlers::files::index))
         .route("/healthz", get(handlers::health::health_liveness))
-        .route("/style.css", get(handlers::static_files::serve_static_file))
-        .route("/script.js", get(handlers::static_files::serve_static_file))
-        .route("/favicon.ico", get(handlers::static_files::serve_favicon))
+        .route("/style.css", get(handlers::files::serve_static_file))
+        .route("/script.js", get(handlers::files::serve_static_file))
+        .route("/favicon.ico", get(handlers::files::serve_favicon))
         .route("/api/config", get(api::get_config))
-        .route("/github/{*path}", any(github::github_proxy))
+        .route("/github/{*path}", any(providers::github::github_proxy))
         .fallback(fallback_proxy)
         .with_state(app_state.clone())
         .layer(cors);
-
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-
-    // Mark server as ready before binding
     app_state.shutdown_manager.mark_ready().await;
-
     info!("=================================================");
     info!("gh-proxy server listening on {}", bind_addr);
     info!("=================================================");
@@ -271,27 +218,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  - ANY  /github/*path      - GitHub proxy");
     info!("  - ANY  /*path             - Fallback proxy");
     info!("=================================================");
-
-    // Create a shutdown manager instance for the shutdown signal handler
     let shutdown_mgr = app_state.shutdown_manager.clone();
-
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
-
     axum::serve(listener, service)
         .with_graceful_shutdown(shutdown_signal(shutdown_mgr))
         .await?;
-
     info!("gh-proxy server shutting down gracefully");
     Ok(())
 }
-
-async fn shutdown_signal(shutdown_mgr: shutdown::ShutdownManager) {
+async fn shutdown_signal(shutdown_mgr: services::shutdown::ShutdownManager) {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
             .expect("failed to install Ctrl+C handler");
     };
-
     #[cfg(unix)]
     let terminate = async {
         signal::unix::signal(signal::unix::SignalKind::terminate())
@@ -299,11 +239,8 @@ async fn shutdown_signal(shutdown_mgr: shutdown::ShutdownManager) {
             .recv()
             .await;
     };
-
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
-
-    // Wait for signal
     tokio::select! {
         _ = ctrl_c => {
             info!("Received Ctrl+C signal, initiating graceful shutdown...");
@@ -312,20 +249,14 @@ async fn shutdown_signal(shutdown_mgr: shutdown::ShutdownManager) {
             info!("Received SIGTERM signal, initiating graceful shutdown...");
         },
     }
-
-    // Initiate graceful shutdown
     shutdown_mgr.initiate_shutdown().await;
     info!("Server stopped accepting new requests");
-
-    // Wait for active requests to complete (max 30 seconds)
     let shutdown_timeout = Duration::from_secs(30);
     info!(
         "Waiting up to {:?} for active requests to complete...",
         shutdown_timeout
     );
-
     let requests_completed = shutdown_mgr.wait_for_requests(shutdown_timeout).await;
-
     if requests_completed {
         info!("All active requests completed. Shutting down...");
     } else {
@@ -334,42 +265,28 @@ async fn shutdown_signal(shutdown_mgr: shutdown::ShutdownManager) {
             shutdown_mgr.get_active_requests()
         );
     }
-
-    // Mark server as stopped
     shutdown_mgr.mark_stopped().await;
 }
-
-/// Resolve the target URI for fallback proxy
 fn resolve_target_uri_with_validation(uri: &Uri, host_guard: &GitHubConfig) -> ProxyResult<Uri> {
     let target_uri = resolve_fallback_target(uri).map_err(|msg| {
-        // Log at debug level instead of error for probe requests
         debug!("Fallback target resolution failed: {}", msg);
         ProxyError::InvalidGitHubUrl(msg)
     })?;
-
     let target_str = target_uri.to_string();
-
     let host = target_uri.host().ok_or_else(|| {
         ProxyError::InvalidTarget(format!("Target URI missing host: {}", target_str))
     })?;
-
     if !host_guard.is_allowed(host) {
         return Err(ProxyError::UnsupportedHost(host.to_string()));
     }
-
-    // Check if it's a non-downloadable GitHub web path (pkgs, releases, etc.)
-    if github::is_github_web_only_path(&target_str) {
+    if providers::github::is_github_web_only_path(&target_str) {
         return Err(ProxyError::GitHubWebPage(target_str));
     }
-
-    // Check if it's a GitHub repository homepage
-    if github::is_github_repo_homepage(&target_str) {
+    if providers::github::is_github_repo_homepage(&target_str) {
         return Err(ProxyError::GitHubRepoHomepage(target_str));
     }
-
     Ok(target_uri)
 }
-
 fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
     let path = uri.path();
     let query = uri.query();
@@ -377,24 +294,17 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
         "resolve_fallback_target - Input URI: {}, path: '{}', query: {:?}",
         uri, path, query
     );
-
-    // Remove leading slash
     let path = path.trim_start_matches('/');
     debug!("After trim_start_matches('/'): '{}'", path);
-
-    // Fix common URL malformation: https:/ -> https://
-    // This handles cases where "https://domain" becomes "https:/domain" due to path normalization
     let path = if path.starts_with("https:/") && !path.starts_with("https://") {
-        // Extract the part after "https:/" and ensure double slash
-        let after_scheme = &path[7..]; // Skip "https:/"
+        let after_scheme = &path[7..];
         debug!(
             "Fixed malformed https:/ URL - raw: '{}' -> normalized: 'https://{}'",
             path, after_scheme
         );
         format!("https://{}", after_scheme)
     } else if path.starts_with("http:/") && !path.starts_with("http://") {
-        // Extract the part after "http:/" and ensure double slash
-        let after_scheme = &path[6..]; // Skip "http:/"
+        let after_scheme = &path[6..];
         debug!(
             "Fixed malformed http:/ URL - raw: '{}' -> normalized: 'http://{}'",
             path, after_scheme
@@ -405,10 +315,8 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
         path.to_string()
     };
     debug!("After URL malformation fix: '{}'", path);
-
     if path.starts_with("http://") || path.starts_with("https://") {
-        let converted = github::convert_github_blob_to_raw(&path);
-        // Reconstruct URI with query parameters
+        let converted = providers::github::convert_github_blob_to_raw(&path);
         let uri_with_query = if let Some(q) = query {
             format!("{}?{}", converted, q)
         } else {
@@ -419,12 +327,9 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
             .parse()
             .map_err(|e| format!("Invalid URL: {}", e));
     }
-
-    // Check for GitHub domain paths (github.com/..., api.github.com/..., etc.)
     if is_github_domain_path(&path) {
         let full_url = format!("https://{}", path);
-        let converted = github::convert_github_blob_to_raw(&full_url);
-        // Reconstruct URI with query parameters
+        let converted = providers::github::convert_github_blob_to_raw(&full_url);
         let uri_with_query = if let Some(q) = query {
             format!("{}?{}", converted, q)
         } else {
@@ -438,11 +343,8 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
             .parse()
             .map_err(|e| format!("Invalid GitHub URL: {}", e));
     }
-
     Err(format!("No valid target found for path: {}", path))
 }
-
-/// Check if a path starts with a GitHub domain
 fn is_github_domain_path(path: &str) -> bool {
     path.starts_with("github.com/")
         || path.starts_with("raw.githubusercontent.com/")
@@ -452,25 +354,15 @@ fn is_github_domain_path(path: &str) -> bool {
         || (path.contains("github")
             && (path.contains(".com/") || path.contains(".io/") || path.contains(".org/")))
 }
-
 fn is_shell_script(uri: &Uri) -> bool {
     let path = uri.path();
     path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh")
 }
-
-/// Determine if compression should be disabled for a specific request URI.
-/// Compression should only be disabled for text content that we need to rewrite
-/// (shell scripts, HTML, markdown files, etc.), to preserve performance for
-/// binary downloads (archives, executables, etc.).
 fn should_disable_compression_for_request(uri: &Uri) -> bool {
     let path = uri.path().to_lowercase();
-
-    // Shell scripts - definitely need text processing
     if path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh") {
         return true;
     }
-
-    // HTML/XML files that might contain URLs
     if path.ends_with(".html")
         || path.ends_with(".htm")
         || path.ends_with(".xml")
@@ -478,18 +370,12 @@ fn should_disable_compression_for_request(uri: &Uri) -> bool {
     {
         return true;
     }
-
-    // Markdown and documentation files
     if path.ends_with(".md") || path.ends_with(".markdown") || path.ends_with(".txt") {
         return true;
     }
-
-    // JSON and YAML configuration files that might contain GitHub URLs
     if path.ends_with(".json") || path.ends_with(".yaml") || path.ends_with(".yml") {
         return true;
     }
-
-    // Binary archives - should NOT disable compression (keep full compression benefits)
     if path.ends_with(".tar.gz")
         || path.ends_with(".tar")
         || path.ends_with(".zip")
@@ -498,8 +384,6 @@ fn should_disable_compression_for_request(uri: &Uri) -> bool {
     {
         return false;
     }
-
-    // Executables and binaries - should NOT disable compression
     if path.ends_with(".exe")
         || path.ends_with(".dll")
         || path.ends_with(".so")
@@ -508,8 +392,6 @@ fn should_disable_compression_for_request(uri: &Uri) -> bool {
     {
         return false;
     }
-
-    // Images - should NOT disable compression (serve pre-compressed format)
     if path.ends_with(".jpg")
         || path.ends_with(".jpeg")
         || path.ends_with(".png")
@@ -519,8 +401,6 @@ fn should_disable_compression_for_request(uri: &Uri) -> bool {
     {
         return false;
     }
-
-    // Audio/Video - should NOT disable compression
     if path.ends_with(".mp3")
         || path.ends_with(".mp4")
         || path.ends_with(".webm")
@@ -529,24 +409,17 @@ fn should_disable_compression_for_request(uri: &Uri) -> bool {
     {
         return false;
     }
-
-    // For unknown file types, don't disable compression unless we're certain
-    // we need to rewrite the content
     false
 }
-
 #[instrument(skip_all)]
 async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
     let method = req.method();
     let full_uri = req.uri();
-
     info!(
         "Fallback proxy request: {} {} (full URI: {})",
         method, path, full_uri
     );
-
-    // Ignore browser requests for favicon and other common static assets
     if matches!(
         path,
         "/favicon.ico" | "/robots.txt" | "/apple-touch-icon.png" | "/.well-known/security.txt"
@@ -556,33 +429,22 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
             .body(Body::empty())
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
-
-    // Get the Host header for proxy URL generation
     let proxy_host = req
         .headers()
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("localhost:8080")
         .to_string();
-
-    // Determine the protocol based on the request
-    // Priority: cf-visitor (Cloudflare) > X-Forwarded-Proto > URI scheme > heuristics > default
     let proxy_scheme = services::request::detect_client_protocol(&req);
-
     let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
     info!(
         "Proxy URL determined: {} (from Cloudflare/upstream)",
         proxy_url
     );
-
     let client_ip = services::request::extract_client_ip(&req);
-
-    // Check blacklist (lazy loaded)
     if let Err(error) = services::blacklist::check_blacklist(&state, client_ip).await {
         return error_response(error);
     }
-
-    // Resolve target URI
     let target_uri = match resolve_target_uri_with_validation(
         req.uri(),
         state.github_config.as_ref(),
@@ -601,7 +463,6 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
                 .unwrap_or_else(|_| Response::new(Body::from("404 Not Found")));
         }
     };
-
     let post_processor = if state.settings.shell.editor {
         Some(ResponsePostProcessor::ShellEditor {
             proxy_url: Arc::from(proxy_url.clone()),
@@ -609,24 +470,13 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
     } else {
         None
     };
-
     let response = match proxy_request(&state, req, target_uri.clone(), post_processor).await {
         Ok(response) => response,
         Err(error) => return error_response(error),
     };
-
     info!("Fallback proxy success: status={}", response.status());
     response
 }
-
-/// Core proxy request handler with streaming support
-///
-/// This function implements efficient proxying with:
-/// - Connection pool reuse (via shared hyper::Client)
-/// - Stream forwarding with backpressure handling
-/// - Zero-copy body forwarding for binary content
-/// - Selective in-memory buffering for text processing only
-/// - Automatic redirect following (3xx responses)
 pub async fn proxy_request(
     state: &AppState,
     req: Request<Body>,
@@ -637,23 +487,15 @@ pub async fn proxy_request(
     let start = std::time::Instant::now();
     let size_limit_mb = state.settings.server.size_limit;
     let size_limit_bytes = size_limit_mb * 1024 * 1024;
-
-    // Follow redirects automatically (max 10 redirects to prevent infinite loops)
     let max_redirects = 10;
     let mut redirect_count = 0;
     let mut current_uri = target_uri.clone();
-
-    // Store initial request info for redirect handling
     let initial_method = req.method().clone();
     let initial_headers = req.headers().clone();
-
-    // Collect the original request body so it can be reused for redirects
     let (mut req_parts, body) = req.into_parts();
     req_parts.uri = current_uri.clone();
-
     let mut body_bytes: Option<Bytes> = None;
     let should_buffer_body = should_buffer_request_body(&initial_method, &req_parts.headers);
-
     let request_body = if should_buffer_body {
         match body.collect().await {
             Ok(collected) => {
@@ -672,33 +514,23 @@ pub async fn proxy_request(
     } else {
         Body::empty()
     };
-
     let mut req = Request::from_parts(req_parts, request_body);
-
-    // Sanitize and modify headers
-    // Only disable compression if shell editor is enabled AND the target is likely to contain
-    // text that needs rewriting (shell scripts, HTML, markdown, etc.)
     let disable_compression = if state.settings.shell.editor && processor.is_some() {
         should_disable_compression_for_request(&current_uri)
     } else {
         false
     };
     sanitize_request_headers(req.headers_mut(), disable_compression);
-
     apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
-
     debug!(
         "Initial request method: {}, URI: {}",
         initial_method, current_uri
     );
-
     let response = loop {
         info!(
             "Sending request to: {} (method: {})",
             current_uri, initial_method
         );
-
-        // Send request using the shared client (connection pooling)
         let response = match state.client.request(req).await {
             Ok(resp) => resp,
             Err(e) => {
@@ -708,15 +540,9 @@ pub async fn proxy_request(
                 return Err(error);
             }
         };
-
         let status = response.status();
-
-        // Handle redirects automatically
-        // Note: 304 Not Modified is technically a 3xx status but is NOT a redirect
-        // It should be returned as-is without requiring a Location header
         if status.is_redirection() && status != StatusCode::NOT_MODIFIED {
             redirect_count += 1;
-
             if redirect_count > max_redirects {
                 error!(
                     "Too many redirects ({}), stopping at: {}",
@@ -729,8 +555,6 @@ pub async fn proxy_request(
                 lifecycle.fail(Some(&error));
                 return Err(error);
             }
-
-            // Get the Location header for the redirect
             let location = match response.headers().get(hyper::header::LOCATION) {
                 Some(loc) => match loc.to_str() {
                     Ok(s) => s,
@@ -759,18 +583,13 @@ pub async fn proxy_request(
                     return Err(error);
                 }
             };
-
             info!(
                 "Following redirect #{}: {} -> {}",
                 redirect_count, current_uri, location
             );
-
-            // Parse the new location
             current_uri = match location.parse::<Uri>() {
                 Ok(uri) => {
-                    // Handle relative URLs by combining with the current URI
                     if uri.scheme().is_none() {
-                        // Relative URL - construct absolute URL
                         let scheme = current_uri.scheme_str().unwrap_or("https");
                         let authority = current_uri.authority().map(|a| a.as_str()).unwrap_or("");
                         match format!("{}://{}{}", scheme, authority, location).parse::<Uri>() {
@@ -802,34 +621,22 @@ pub async fn proxy_request(
                     return Err(error);
                 }
             };
-
-            // Create a new request for the redirect (reuse method and headers from initial request)
             let redirect_body = body_bytes
                 .as_ref()
                 .map(|bytes| Body::from(bytes.clone()))
                 .unwrap_or_else(Body::empty);
-
             req = Request::builder()
                 .method(initial_method.clone())
                 .uri(current_uri.clone())
                 .body(redirect_body)
                 .map_err(ProxyError::HttpBuilder)?;
-
-            // Copy headers from initial request
             *req.headers_mut() = initial_headers.clone();
-
-            // Sanitize and modify headers for the redirect request
             sanitize_request_headers(req.headers_mut(), disable_compression);
             apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
-
-            // Continue to follow the redirect
             continue;
         }
-
-        // Not a redirect, return the response
         break response;
     };
-
     let status = response.status();
     let headers = response.headers().clone();
     let content_type = headers
@@ -840,14 +647,11 @@ pub async fn proxy_request(
         .get(hyper::header::CONTENT_LENGTH)
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
-
     let elapsed = start.elapsed();
     info!(
         "Response: status={}, content_length={:?}, elapsed={:?}",
         status, content_length, elapsed
     );
-
-    // Check response size limit BEFORE processing when length is known
     if let Some(length) = content_length
         && length > size_limit_bytes
     {
@@ -860,19 +664,11 @@ pub async fn proxy_request(
         lifecycle.fail(Some(&error));
         return Err(error);
     }
-
     let shell_processing_enabled = state.settings.shell.editor && processor.is_some();
-
-    // Never perform text processing on redirect responses (3xx status codes)
-    // These responses typically have minimal or empty bodies and must preserve their
-    // Location header and other redirect-related information
     let is_redirect = status.is_redirection();
     let needs_text_processing = !is_redirect
         && is_response_needs_text_processing(&content_type, &target_uri, shell_processing_enabled);
-
-    // Get response body
     let (mut parts, body) = response.into_parts();
-
     if needs_text_processing {
         let proxy_url = match processor_proxy_url(&processor) {
             Some(url) => url,
@@ -884,7 +680,6 @@ pub async fn proxy_request(
                 return Err(error);
             }
         };
-
         let body_bytes = match collect_body_with_limit(body, size_limit_mb).await {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -892,10 +687,8 @@ pub async fn proxy_request(
                 return Err(err);
             }
         };
-
         let processed_bytes;
         let mut loosen_headers = false;
-
         if is_shell_script(&target_uri) {
             match process_shell_script_bytes(body_bytes.clone(), proxy_url) {
                 Ok(bytes) => {
@@ -923,36 +716,27 @@ pub async fn proxy_request(
         } else {
             processed_bytes = body_bytes;
         }
-
         sanitize_response_headers(&mut parts.headers, true, true, loosen_headers);
         let content_length_value = HeaderValue::from_str(&processed_bytes.len().to_string())
             .unwrap_or_else(|_| HeaderValue::from_static("0"));
         parts
             .headers
             .insert(hyper::header::CONTENT_LENGTH, content_length_value);
-
         let response = Response::from_parts(parts, Body::from(processed_bytes));
         lifecycle.success();
         return Ok(response);
     }
-
     sanitize_response_headers(&mut parts.headers, false, false, false);
-
-    // Fix Content-Type for common file extensions if it's missing or incorrect
     fix_content_type_header(&mut parts.headers, &target_uri);
-
     let streaming_body = ProxyBodyStream::new(
         body.into_data_stream().boxed(),
         lifecycle,
         size_limit_bytes,
         size_limit_mb,
     );
-
     let response = Response::from_parts(parts, Body::from_stream(streaming_body));
     Ok(response)
 }
-
-/// Determine if a response needs text processing (URL injection, modification)
 fn is_response_needs_text_processing(
     content_type: &Option<String>,
     target_uri: &Uri,
@@ -961,49 +745,29 @@ fn is_response_needs_text_processing(
     if !shell_editor_enabled {
         return false;
     }
-
     let path = target_uri.path();
-
-    // Shell scripts always need processing
     if path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh") {
         return true;
     }
-
-    // HTML files need processing
     if path.ends_with(".html") || path.ends_with(".htm") {
         return true;
     }
-
-    // Check content type
     if let Some(ct) = content_type {
         let ct_lower = ct.to_lowercase();
-
-        // Text files
         if ct_lower.contains("text/") {
             return true;
         }
-
-        // HTML
         if ct_lower.contains("text/html") || ct_lower.contains("application/xhtml") {
             return true;
         }
     }
-
     false
 }
-
 fn sanitize_request_headers(headers: &mut HeaderMap, disable_compression: bool) {
     if disable_compression {
-        // Remove compression-related headers from the request
         headers.remove(header::ACCEPT_ENCODING);
     }
-
-    // IMPORTANT: Preserve Range and Accept-Ranges headers for Cloudflare
-    // These enable efficient streaming and resumable downloads at the edge
-    // Never remove these headers - they're essential for large file downloads
-    // and Cloudflare's partial content caching strategy
 }
-
 fn should_buffer_request_body(method: &Method, headers: &HeaderMap) -> bool {
     if headers
         .get(header::CONTENT_LENGTH)
@@ -1014,17 +778,14 @@ fn should_buffer_request_body(method: &Method, headers: &HeaderMap) -> bool {
     {
         return true;
     }
-
     if headers.contains_key(header::TRANSFER_ENCODING) {
         return true;
     }
-
     matches!(
         *method,
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE | Method::OPTIONS
     )
 }
-
 fn sanitize_response_headers(
     headers: &mut HeaderMap,
     body_replaced: bool,
@@ -1037,44 +798,29 @@ fn sanitize_response_headers(
         headers.remove("connection");
         headers.remove("keep-alive");
     }
-
     if strip_encoding {
         headers.remove(header::CONTENT_ENCODING);
     }
-
     if loosen_security {
-        // Remove Content-Security-Policy headers that block script execution
         headers.remove("content-security-policy");
         headers.remove("content-security-policy-report-only");
-
-        // Remove X-Frame-Options to allow embedding
         headers.remove("x-frame-options");
-
-        // Remove other restrictive headers that interfere with inline assets
         headers.remove("x-content-type-options");
         headers.remove("cache-control");
         headers.remove("pragma");
         headers.remove("etag");
         headers.remove("last-modified");
     }
-
-    // IMPORTANT: Keep Location header for redirects (3xx responses)
-    // The Location header should be preserved as-is for proper redirect handling
 }
-
 fn fix_content_type_header(headers: &mut HeaderMap, target_uri: &Uri) {
     let path = target_uri.path();
     let content_type = headers.get(header::CONTENT_TYPE);
-
-    // If Content-Type is already set and not text/plain, don't override
     if let Some(ct) = content_type
         && let Ok(ct_str) = ct.to_str()
         && !ct_str.to_lowercase().starts_with("text/plain")
     {
         return;
     }
-
-    // Determine MIME type based on file extension
     let mime_type = if path.ends_with(".js") || path.ends_with(".mjs") {
         "application/javascript; charset=utf-8"
     } else if path.ends_with(".css") {
@@ -1098,19 +844,16 @@ fn fix_content_type_header(headers: &mut HeaderMap, target_uri: &Uri) {
     } else if path.ends_with(".ico") {
         "image/x-icon"
     } else {
-        return; // Don't set if we can't determine
+        return;
     };
-
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime_type));
 }
-
 fn processor_proxy_url(processor: &Option<ResponsePostProcessor>) -> Option<&str> {
     match processor {
         Some(ResponsePostProcessor::ShellEditor { proxy_url }) => Some(proxy_url.as_ref()),
         None => None,
     }
 }
-
 fn is_html_like(content_type: &Option<String>, target_uri: &Uri) -> bool {
     if let Some(ct) = content_type {
         let lowered = ct.to_lowercase();
@@ -1118,13 +861,10 @@ fn is_html_like(content_type: &Option<String>, target_uri: &Uri) -> bool {
             return true;
         }
     }
-
     let path = target_uri.path().to_lowercase();
     path.ends_with(".html") || path.ends_with(".htm")
 }
-
 type BoxedBodyStream = Pin<Box<dyn Stream<Item = Result<Bytes, hyper::Error>> + Send>>;
-
 struct ProxyBodyStream {
     inner: BoxedBodyStream,
     lifecycle: Option<RequestLifecycle>,
@@ -1132,7 +872,6 @@ struct ProxyBodyStream {
     size_limit_mb: u64,
     total_bytes: u64,
 }
-
 impl ProxyBodyStream {
     fn new(
         inner: BoxedBodyStream,
@@ -1149,17 +888,14 @@ impl ProxyBodyStream {
         }
     }
 }
-
 impl Stream for ProxyBodyStream {
     type Item = Result<Bytes, ProxyError>;
-
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         match this.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
                 let chunk_len = chunk.len() as u64;
                 let new_total = this.total_bytes.saturating_add(chunk_len);
-
                 if this.size_limit_bytes > 0 && new_total > this.size_limit_bytes {
                     let size_mb = std::cmp::max(1, new_total / 1024 / 1024);
                     warn!(
@@ -1172,7 +908,6 @@ impl Stream for ProxyBodyStream {
                     }
                     return Poll::Ready(Some(Err(error)));
                 }
-
                 this.total_bytes = new_total;
                 Poll::Ready(Some(Ok(chunk)))
             }
@@ -1194,19 +929,16 @@ impl Stream for ProxyBodyStream {
         }
     }
 }
-
 async fn collect_body_with_limit(body: Incoming, size_limit_mb: u64) -> ProxyResult<Vec<u8>> {
     let limit_bytes = size_limit_mb.saturating_mul(1024 * 1024);
     let mut total: u64 = 0;
     let mut data = Vec::new();
     let mut stream = body.into_data_stream();
-
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| {
             error!("Failed to read response body: {}", e);
             ProxyError::Http(Box::new(e))
         })?;
-
         total = total.saturating_add(chunk.len() as u64);
         if total > limit_bytes {
             let size_mb = std::cmp::max(1, total / 1024 / 1024);
@@ -1216,13 +948,10 @@ async fn collect_body_with_limit(body: Incoming, size_limit_mb: u64) -> ProxyRes
             );
             return Err(ProxyError::SizeExceeded(size_mb, size_limit_mb));
         }
-
         data.extend_from_slice(&chunk);
     }
-
     Ok(data)
 }
-
 fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, String> {
     match String::from_utf8(body_bytes) {
         Ok(text) => {
@@ -1245,7 +974,6 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
         }
     }
 }
-
 fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, String> {
     match String::from_utf8(body_bytes) {
         Ok(text) => {
@@ -1268,20 +996,15 @@ fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, S
         }
     }
 }
-
 fn apply_github_headers(headers: &mut HeaderMap, target_uri: &Uri, auth: &AuthConfig) {
-    // Add GitHub token if available
     if auth.has_token()
         && let Ok(value) = HeaderValue::from_str(&format!("token {}", auth.token))
     {
         headers.insert(header::AUTHORIZATION, value);
     }
-
-    // Add User-Agent
     if let Ok(value) = HeaderValue::from_str("gh-proxy/0.1.0") {
         headers.insert(header::USER_AGENT, value);
     }
-
     if let Some(host) = target_uri.host().map(|h| h.to_ascii_lowercase()) {
         if is_github_api_host(&host) {
             headers.insert(
@@ -1293,11 +1016,9 @@ fn apply_github_headers(headers: &mut HeaderMap, target_uri: &Uri, auth: &AuthCo
         }
     }
 }
-
 fn is_github_api_host(host: &str) -> bool {
     matches!(host, "api.github.com")
 }
-
 fn is_github_file_host(host: &str) -> bool {
     matches!(
         host,

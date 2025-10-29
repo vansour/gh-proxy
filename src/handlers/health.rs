@@ -1,10 +1,6 @@
-/// Health check handlers for Kubernetes and monitoring
-/// Provides liveness and readiness probes for container orchestration
+use crate::AppState;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
-
-use crate::AppState;
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthStatus {
     pub state: String,
@@ -13,9 +9,6 @@ pub struct HealthStatus {
     pub uptime_secs: u64,
     pub accepting_requests: bool,
 }
-
-/// GET /healthz - Liveness probe (is server alive)
-/// Returns OK if the server process is running, regardless of readiness
 pub async fn health_liveness(State(state): State<AppState>) -> (StatusCode, Json<HealthStatus>) {
     let is_alive = state.shutdown_manager.is_alive().await;
     let status = HealthStatus {
@@ -25,12 +18,10 @@ pub async fn health_liveness(State(state): State<AppState>) -> (StatusCode, Json
         uptime_secs: state.uptime_tracker.uptime_secs(),
         accepting_requests: state.shutdown_manager.should_accept_request(),
     };
-
     let status_code = if is_alive {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-
     (status_code, Json(status))
 }

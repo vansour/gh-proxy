@@ -1,27 +1,12 @@
-/// Request processing utilities
-/// Extracts and processes request information
-use std::net::{IpAddr, SocketAddr};
-
 use axum::extract::{Request, connect_info::ConnectInfo};
-
-/// Extract client IP from request headers or connection info
-/// Priority order for IP detection (Cloudflare-first):
-/// 1. cf-connecting-ip (Cloudflare connecting IP)
-/// 2. X-Forwarded-For (proxy chain)
-/// 3. Forwarded header (RFC 7239)
-/// 4. True-Client-IP (Akamai/Cloudflare fallback)
-/// 5. X-Real-IP (nginx/common proxy)
-/// 6. Connection info (fallback)
+use std::net::{IpAddr, SocketAddr};
 pub fn extract_client_ip(req: &Request<axum::body::Body>) -> Option<String> {
-    // Try Cloudflare's connecting IP header first (most reliable when behind CF)
     if let Some(cf) = req.headers().get("cf-connecting-ip")
         && let Ok(ip) = cf.to_str()
         && let Some(addr) = parse_ip_literal(ip)
     {
         return Some(addr.to_string());
     }
-
-    // Try X-Forwarded-For header (for proxied requests from proxy chains)
     if let Some(xff) = req.headers().get("x-forwarded-for")
         && let Ok(xff_str) = xff.to_str()
     {
@@ -31,8 +16,6 @@ pub fn extract_client_ip(req: &Request<axum::body::Body>) -> Option<String> {
             }
         }
     }
-
-    // Try standardized Forwarded header (e.g. for=192.0.2.43)
     if let Some(forwarded) = req.headers().get("forwarded")
         && let Ok(forwarded_str) = forwarded.to_str()
     {
@@ -47,51 +30,33 @@ pub fn extract_client_ip(req: &Request<axum::body::Body>) -> Option<String> {
             }
         }
     }
-
-    // Try Akamai/Cloudflare True-Client-IP header as fallback
     if let Some(true_client) = req.headers().get("true-client-ip")
         && let Ok(ip) = true_client.to_str()
         && let Some(addr) = parse_ip_literal(ip)
     {
         return Some(addr.to_string());
     }
-
-    // Try X-Real-IP header (nginx/reverse proxy)
     if let Some(xri) = req.headers().get("x-real-ip")
         && let Ok(ip) = xri.to_str()
         && let Some(addr) = parse_ip_literal(ip)
     {
         return Some(addr.to_string());
     }
-
-    // Fallback to connection info injected by axum
     if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
         return Some(addr.ip().to_string());
     }
-
     None
 }
-
-/// Detect the request protocol/scheme with Cloudflare awareness
-/// Priority order:
-/// 1. cf-visitor header (Cloudflare protocol indicator: {"scheme":"https"})
-/// 2. X-Forwarded-Proto header
-/// 3. URI scheme (if present)
-/// 4. Heuristics (check host/port)
 pub fn detect_client_protocol(req: &Request<axum::body::Body>) -> String {
-    // Try Cloudflare's cf-visitor header first
     if let Some(cf_visitor) = req.headers().get("cf-visitor")
         && let Ok(visitor_str) = cf_visitor.to_str()
     {
-        // cf-visitor is JSON like: {"scheme":"https"}
         if visitor_str.contains("\"scheme\":\"https\"") {
             return "https".to_string();
         } else if visitor_str.contains("\"scheme\":\"http\"") {
             return "http".to_string();
         }
     }
-
-    // Try X-Forwarded-Proto header
     if let Some(forwarded) = req.headers().get("x-forwarded-proto")
         && let Ok(proto) = forwarded.to_str()
     {
@@ -100,16 +65,12 @@ pub fn detect_client_protocol(req: &Request<axum::body::Body>) -> String {
             return proto_lower;
         }
     }
-
-    // Try URI scheme
     if let Some(scheme) = req.uri().scheme_str() {
         let scheme_lower = scheme.to_lowercase();
         if scheme_lower == "https" || scheme_lower == "http" {
             return scheme_lower;
         }
     }
-
-    // Heuristics: check Host header and connection info
     if let Some(host) = req.headers().get("host")
         && let Ok(host_str) = host.to_str()
         && (host_str.starts_with("localhost")
@@ -121,29 +82,21 @@ pub fn detect_client_protocol(req: &Request<axum::body::Body>) -> String {
     {
         return "http".to_string();
     }
-
-    // Default to https for remote connections
     "https".to_string()
 }
-
 fn parse_ip_literal(value: &str) -> Option<IpAddr> {
     let value = value.trim().trim_matches('"');
-
     if let Ok(ip) = value.parse::<IpAddr>() {
         return Some(ip);
     }
-
     if let Ok(addr) = value.parse::<SocketAddr>() {
         return Some(addr.ip());
     }
-
-    // Forwarded header may wrap IPv6 addresses in brackets without a port.
     if let Some(stripped) = value.strip_prefix('[')
         && let Some(rest) = stripped.strip_suffix(']')
         && let Ok(ip) = rest.parse::<IpAddr>()
     {
         return Some(ip);
     }
-
     None
 }
