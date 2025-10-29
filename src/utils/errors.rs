@@ -1,19 +1,9 @@
-// Comprehensive error handling module
-// Provides error context, recovery mechanisms, and safe error response building
-// Combines utilities for handling errors with proper logging and fallbacks
-
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
 use hyper::header;
 use std::fs;
 use std::path::Path;
 use tracing::{error, warn};
-
-// ============================================================================
-// Basic File and Response Utilities
-// ============================================================================
-
-/// Safely read a binary file and return contents or empty bytes with logging
 pub fn read_file_bytes_or_empty<P: AsRef<Path>>(path: P) -> Vec<u8> {
     match fs::read(path.as_ref()) {
         Ok(content) => content,
@@ -27,8 +17,6 @@ pub fn read_file_bytes_or_empty<P: AsRef<Path>>(path: P) -> Vec<u8> {
         }
     }
 }
-
-/// Safely build an HTTP response with proper error handling
 pub fn build_response(status: StatusCode, content_type: &str, body: String) -> Response<Body> {
     Response::builder()
         .status(status)

@@ -1,42 +1,21 @@
-// Graceful shutdown and health check management
-//
-// This module handles:
-// - Signal handling for graceful shutdown (SIGTERM, SIGINT)
-// - Server state management during shutdown
-// - Liveness and readiness probes for Kubernetes
-// - Request draining before shutdown
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
-
-/// Server state for managing lifecycle transitions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerState {
-    /// Server is starting up
     Starting,
-    /// Server is ready to serve requests
     Ready,
-    /// Server is shutting down, no new requests accepted
     ShuttingDown,
-    /// Server has shut down completely
     Stopped,
 }
-
-/// Manages server lifecycle and graceful shutdown
 pub struct ShutdownManager {
-    /// Current server state
     state: Arc<RwLock<ServerState>>,
-    /// Number of active requests
     active_requests: Arc<AtomicUsize>,
-    /// Signal received flag
     shutdown_signal: Arc<AtomicBool>,
 }
-
 impl ShutdownManager {
-    /// Create a new shutdown manager
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(ServerState::Starting)),
@@ -44,27 +23,19 @@ impl ShutdownManager {
             shutdown_signal: Arc::new(AtomicBool::new(false)),
         }
     }
-
-    /// Mark the server as ready
     pub async fn mark_ready(&self) {
         let mut state = self.state.write().await;
         *state = ServerState::Ready;
         info!("Server marked as ready for requests");
     }
-
-    /// Check if server is ready to serve requests
     pub async fn is_ready(&self) -> bool {
         let state = self.state.read().await;
         *state == ServerState::Ready
     }
-
-    /// Check if server is alive (started but may not be ready)
     pub async fn is_alive(&self) -> bool {
         let state = self.state.read().await;
         matches!(*state, ServerState::Ready | ServerState::Starting)
     }
-
-    /// Increment active request counter
     pub fn request_started(&self) {
         self.active_requests.fetch_add(1, Ordering::SeqCst);
         debug!(
@@ -72,30 +43,20 @@ impl ShutdownManager {
             self.get_active_requests()
         );
     }
-
-    /// Decrement active request counter
     pub fn request_completed(&self) {
         let _ = self.active_requests.fetch_sub(1, Ordering::SeqCst);
         let active = self.get_active_requests();
         debug!("Request completed. Active requests: {}", active);
-
-        // Log when last request completes during shutdown
         if active == 0 && self.is_shutting_down() {
             info!("All requests completed. Ready for shutdown.");
         }
     }
-
-    /// Get current number of active requests
     pub fn get_active_requests(&self) -> usize {
         self.active_requests.load(Ordering::SeqCst)
     }
-
-    /// Get current server state
     pub async fn get_state(&self) -> ServerState {
         *self.state.read().await
     }
-
-    /// Initiate graceful shutdown
     pub async fn initiate_shutdown(&self) {
         let mut state = self.state.write().await;
         if *state != ServerState::Stopped {
@@ -104,25 +65,17 @@ impl ShutdownManager {
             info!("Graceful shutdown initiated");
         }
     }
-
-    /// Check if shutdown has been signaled
     pub fn is_shutting_down(&self) -> bool {
         self.shutdown_signal.load(Ordering::SeqCst)
     }
-
-    /// Wait for all active requests to complete with timeout
-    ///
-    /// Returns true if all requests completed, false if timeout occurred
     pub async fn wait_for_requests(&self, timeout: Duration) -> bool {
         let start = std::time::Instant::now();
         let check_interval = Duration::from_millis(100);
-
         loop {
             if self.get_active_requests() == 0 {
                 info!("All requests completed successfully");
                 return true;
             }
-
             if start.elapsed() > timeout {
                 warn!(
                     "Shutdown timeout reached with {} active requests still running",
@@ -130,36 +83,28 @@ impl ShutdownManager {
                 );
                 return false;
             }
-
             debug!(
                 "Waiting for requests to complete: {} active, elapsed: {:?}",
                 self.get_active_requests(),
                 start.elapsed()
             );
-
             tokio::time::sleep(check_interval).await;
         }
     }
-
-    /// Mark server as stopped
     pub async fn mark_stopped(&self) {
         let mut state = self.state.write().await;
         *state = ServerState::Stopped;
         info!("Server marked as stopped");
     }
-
-    /// Check if a new request should be accepted
     pub fn should_accept_request(&self) -> bool {
         !self.is_shutting_down()
     }
 }
-
 impl Default for ShutdownManager {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl Clone for ShutdownManager {
     fn clone(&self) -> Self {
         Self {
@@ -169,21 +114,15 @@ impl Clone for ShutdownManager {
         }
     }
 }
-
-/// Tracks server uptime
 pub struct UptimeTracker {
     start_time: std::time::Instant,
 }
-
 impl UptimeTracker {
-    /// Create a new uptime tracker
     pub fn new() -> Self {
         Self {
             start_time: std::time::Instant::now(),
         }
     }
-
-    /// Get uptime in seconds
     pub fn uptime_secs(&self) -> u64 {
         let elapsed = self.start_time.elapsed();
         let secs = elapsed.as_secs();
@@ -196,7 +135,6 @@ impl UptimeTracker {
         }
     }
 }
-
 impl Default for UptimeTracker {
     fn default() -> Self {
         Self::new()
