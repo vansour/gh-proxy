@@ -419,3 +419,191 @@ impl GitHubConfig {
 pub fn default_config_path() -> &'static Path {
     Path::new(DEFAULT_CONFIG_PATH)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_host_pattern_parse_exact() {
+        let pattern = HostPattern::parse("github.com").unwrap();
+        assert!(pattern.matches("github.com"));
+        assert!(!pattern.matches("api.github.com"));
+    }
+
+    #[test]
+    fn test_host_pattern_parse_suffix_with_dot() {
+        let pattern = HostPattern::parse("*.github.com").unwrap();
+        assert!(pattern.matches("api.github.com"));
+        assert!(pattern.matches("github.com"));
+        assert!(!pattern.matches("example.com"));
+    }
+
+    #[test]
+    fn test_host_pattern_parse_with_protocol() {
+        let pattern = HostPattern::parse("https://github.com:443/path").unwrap();
+        assert!(pattern.matches("github.com"));
+    }
+
+    #[test]
+    fn test_host_pattern_parse_empty_error() {
+        assert!(HostPattern::parse("").is_err());
+        assert!(HostPattern::parse("   ").is_err());
+    }
+
+    #[test]
+    fn test_server_config_default() {
+        let config = ServerConfig::default();
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 8080);
+        assert_eq!(config.size_limit, 125);
+    }
+
+    #[test]
+    fn test_server_config_bind_addr() {
+        let config = ServerConfig::default();
+        assert_eq!(config.bind_addr(), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn test_auth_config_has_token() {
+        let config_with_token = AuthConfig {
+            token: "secret123".to_string(),
+        };
+        assert!(config_with_token.has_token());
+
+        let config_no_token = AuthConfig {
+            token: "".to_string(),
+        };
+        assert!(!config_no_token.has_token());
+
+        let config_whitespace = AuthConfig {
+            token: "   ".to_string(),
+        };
+        assert!(!config_whitespace.has_token());
+    }
+
+    #[test]
+    fn test_shell_config_is_editor_enabled() {
+        let config_enabled = ShellConfig { editor: true };
+        assert!(config_enabled.is_editor_enabled());
+
+        let config_disabled = ShellConfig { editor: false };
+        assert!(!config_disabled.is_editor_enabled());
+    }
+
+    #[test]
+    fn test_log_config_get_level() {
+        let config = LogConfig {
+            log_file_path: "/var/log/app.log".to_string(),
+            level: "info".to_string(),
+        };
+        assert_eq!(config.get_level(), "info");
+    }
+
+    #[test]
+    fn test_log_config_validate_valid_levels() {
+        let levels = vec!["debug", "info", "warn", "error", "trace", "none"];
+        for level in levels {
+            let config = LogConfig {
+                log_file_path: "/var/log/app.log".to_string(),
+                level: level.to_string(),
+            };
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_log_config_validate_invalid_level() {
+        let config = LogConfig {
+            log_file_path: "/var/log/app.log".to_string(),
+            level: "invalid".to_string(),
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_blacklist_config_ip_matches_rule_exact() {
+        assert!(BlacklistConfig::ip_matches_rule(
+            "192.168.1.1",
+            "192.168.1.1"
+        ));
+        assert!(!BlacklistConfig::ip_matches_rule(
+            "192.168.1.2",
+            "192.168.1.1"
+        ));
+    }
+
+    #[test]
+    fn test_blacklist_config_ip_in_cidr() {
+        assert!(BlacklistConfig::ip_in_cidr("192.168.1.1", "192.168.1.0/24"));
+        assert!(BlacklistConfig::ip_in_cidr(
+            "192.168.1.255",
+            "192.168.1.0/24"
+        ));
+        assert!(!BlacklistConfig::ip_in_cidr(
+            "192.168.2.1",
+            "192.168.1.0/24"
+        ));
+    }
+
+    #[test]
+    fn test_blacklist_config_ip_in_range() {
+        assert!(BlacklistConfig::ip_in_range(
+            "192.168.1.1",
+            "192.168.1.0 - 192.168.1.255"
+        ));
+        assert!(BlacklistConfig::ip_in_range(
+            "192.168.1.100",
+            "192.168.1.0 - 192.168.1.255"
+        ));
+        assert!(!BlacklistConfig::ip_in_range(
+            "192.168.2.1",
+            "192.168.1.0 - 192.168.1.255"
+        ));
+    }
+
+    #[test]
+    fn test_blacklist_config_ip_matches_wildcard() {
+        assert!(BlacklistConfig::ip_matches_wildcard(
+            "192.168.1.1",
+            "192.168.1.*"
+        ));
+        assert!(BlacklistConfig::ip_matches_wildcard(
+            "192.168.1.255",
+            "192.168.1.*"
+        ));
+        assert!(!BlacklistConfig::ip_matches_wildcard(
+            "192.168.2.1",
+            "192.168.1.*"
+        ));
+    }
+
+    #[test]
+    fn test_blacklist_config_ip_to_u32() {
+        assert_eq!(BlacklistConfig::ip_to_u32("0.0.0.0"), Some(0));
+        assert_eq!(
+            BlacklistConfig::ip_to_u32("255.255.255.255"),
+            Some(u32::MAX)
+        );
+        assert_eq!(BlacklistConfig::ip_to_u32("192.168.1.1"), Some(3232235777));
+        assert_eq!(BlacklistConfig::ip_to_u32("256.1.1.1"), None);
+        assert_eq!(BlacklistConfig::ip_to_u32("1.1.1"), None);
+    }
+
+    #[test]
+    fn test_github_config_is_allowed() {
+        let proxy_config = ProxyConfig {
+            allowed_hosts: vec![
+                "github.com".to_string(),
+                "*.githubusercontent.com".to_string(),
+            ],
+        };
+        let github_config = GitHubConfig::new("token", &proxy_config);
+
+        assert!(github_config.is_allowed("github.com"));
+        assert!(github_config.is_allowed("api.githubusercontent.com"));
+        assert!(github_config.is_allowed("raw.githubusercontent.com"));
+        assert!(!github_config.is_allowed("example.com"));
+    }
+}

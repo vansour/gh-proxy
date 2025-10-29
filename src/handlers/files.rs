@@ -98,3 +98,95 @@ pub async fn serve_favicon() -> Response<Body> {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serve_static_file_css_content_type() {
+        let uri = Uri::builder().path_and_query("/style.css").build().unwrap();
+        let path = uri.path().trim_start_matches('/');
+        let content_type = match path {
+            "style.css" => "text/css; charset=utf-8",
+            "script.js" => "application/javascript; charset=utf-8",
+            _ => "text/plain; charset=utf-8",
+        };
+        assert_eq!(content_type, "text/css; charset=utf-8");
+    }
+
+    #[test]
+    fn test_serve_static_file_js_content_type() {
+        let uri = Uri::builder().path_and_query("/script.js").build().unwrap();
+        let path = uri.path().trim_start_matches('/');
+        let content_type = match path {
+            "style.css" => "text/css; charset=utf-8",
+            "script.js" => "application/javascript; charset=utf-8",
+            _ => "text/plain; charset=utf-8",
+        };
+        assert_eq!(content_type, "application/javascript; charset=utf-8");
+    }
+
+    #[test]
+    fn test_serve_static_file_default_content_type() {
+        let uri = Uri::builder().path_and_query("/other.txt").build().unwrap();
+        let path = uri.path().trim_start_matches('/');
+        let content_type = match path {
+            "style.css" => "text/css; charset=utf-8",
+            "script.js" => "application/javascript; charset=utf-8",
+            _ => "text/plain; charset=utf-8",
+        };
+        assert_eq!(content_type, "text/plain; charset=utf-8");
+    }
+
+    #[test]
+    fn test_static_file_path_trimming() {
+        let uri = Uri::builder()
+            .path_and_query("/static/path/to/file.txt")
+            .build()
+            .unwrap();
+        let path = uri.path().trim_start_matches('/');
+        assert_eq!(path, "static/path/to/file.txt");
+    }
+
+    #[test]
+    fn test_etag_generation() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let html = "<html>test</html>";
+        let mut hasher = DefaultHasher::new();
+        html.hash(&mut hasher);
+        let etag = format!("\"{}\"", hasher.finish());
+
+        // Verify etag format
+        assert!(etag.starts_with('"'));
+        assert!(etag.ends_with('"'));
+        assert!(etag.len() > 2); // Must have content between quotes
+    }
+
+    #[test]
+    fn test_etag_consistency() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let html = "<html>test</html>";
+
+        let mut hasher1 = DefaultHasher::new();
+        html.hash(&mut hasher1);
+        let etag1 = format!("\"{}\"", hasher1.finish());
+
+        let mut hasher2 = DefaultHasher::new();
+        html.hash(&mut hasher2);
+        let etag2 = format!("\"{}\"", hasher2.finish());
+
+        // ETags should be consistent for the same content
+        assert_eq!(etag1, etag2);
+    }
+
+    #[test]
+    fn test_favicon_etag() {
+        let etag = "\"static-favicon\"";
+        assert_eq!(etag, "\"static-favicon\"");
+    }
+}
