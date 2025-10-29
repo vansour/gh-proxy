@@ -254,13 +254,15 @@ mod tests {
     #[test]
     fn test_uptime_tracker_new() {
         let tracker = UptimeTracker::new();
-        assert!(tracker.uptime_secs() >= 0);
+        let uptime = tracker.uptime_secs();
+        assert_eq!(uptime, 0); // Should be 0 or close to 0 when just created
     }
 
     #[test]
     fn test_uptime_tracker_default() {
         let tracker = UptimeTracker::default();
-        assert!(tracker.uptime_secs() >= 0);
+        let uptime = tracker.uptime_secs();
+        assert_eq!(uptime, 0); // Should be 0 or close to 0 when just created
     }
 
     #[test]
