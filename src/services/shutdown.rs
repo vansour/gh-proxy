@@ -255,14 +255,14 @@ mod tests {
     fn test_uptime_tracker_new() {
         let tracker = UptimeTracker::new();
         let uptime = tracker.uptime_secs();
-        assert_eq!(uptime, 0); // Should be 0 or close to 0 when just created
+        assert!(uptime <= 1, "uptime should be at most 1 second, got {}", uptime);
     }
 
     #[test]
     fn test_uptime_tracker_default() {
         let tracker = UptimeTracker::default();
         let uptime = tracker.uptime_secs();
-        assert_eq!(uptime, 0); // Should be 0 or close to 0 when just created
+        assert!(uptime <= 1, "uptime should be at most 1 second, got {}", uptime);
     }
 
     #[test]
