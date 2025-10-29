@@ -6,13 +6,13 @@ connectTimeoutSeconds = 30   # Upstream connect timeout (seconds, 0 disables)
 keepAliveSeconds = 90        # Keep-alive duration for upstream connections (seconds, 0 disables)
 poolMaxIdlePerHost = 8       # Idle connections per upstream host
 
+
 [shell]
 editor = true
 
 [log]
 logFilePath = "/app/logs/gh-proxy.log"
-maxLogSize = 5 # MB
-level = "info" # debug, info, warn, error, none
+level = "info" # debug, info, warn, error
 
 [auth]
 token = ""

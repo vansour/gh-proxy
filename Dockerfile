@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile optimization
 # Stage 1: Build stage - compile Rust binary
-FROM docker.io/rust:trixie AS builder
+FROM ghcr.io/vansour/rust:trixie AS builder
 
 WORKDIR /app
 
@@ -16,17 +16,21 @@ RUN cargo build --release --locked && \
     strip target/release/gh-proxy
 
 # Stage 2: Runtime stage - minimal image
-FROM docker.io/debian:trixie-slim
+FROM ghcr.io/vansour/debian:trixie-slim
 
 # Install only essential runtime dependencies
 # ca-certificates: For HTTPS/TLS connections
 # (curl and wget are not needed for the running container)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates tzdata \
     && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Configure timezone without systemd (safe for containers)
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo "Asia/Shanghai" > /etc/timezone
 
 # Create application directories
 WORKDIR /app

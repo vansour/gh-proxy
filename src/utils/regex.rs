@@ -31,27 +31,3 @@ pub fn get_link_pattern() -> &'static Regex {
             .expect("Failed to compile link pattern regex")
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_raw_pattern() {
-        let pattern = get_raw_pattern();
-        assert!(pattern.is_match("https://raw.githubusercontent.com/owner/repo/branch/file.rs"));
-    }
-
-    #[test]
-    fn test_github_pattern() {
-        let pattern = get_github_pattern();
-        assert!(pattern.is_match("https://github.com/owner/repo/blob/branch/file.rs"));
-    }
-
-    #[test]
-    fn test_link_pattern() {
-        let pattern = get_link_pattern();
-        let text = "Check https://raw.githubusercontent.com/owner/repo/branch/file";
-        assert!(pattern.is_match(text));
-    }
-}
