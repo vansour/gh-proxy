@@ -140,3 +140,135 @@ impl Default for UptimeTracker {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_server_state_equality() {
+        assert_eq!(ServerState::Starting, ServerState::Starting);
+        assert_eq!(ServerState::Ready, ServerState::Ready);
+        assert_ne!(ServerState::Starting, ServerState::Ready);
+    }
+
+    #[test]
+    fn test_shutdown_manager_new() {
+        let manager = ShutdownManager::new();
+        assert_eq!(manager.get_active_requests(), 0);
+        assert!(!manager.is_shutting_down());
+    }
+
+    #[test]
+    fn test_shutdown_manager_default() {
+        let manager = ShutdownManager::default();
+        assert_eq!(manager.get_active_requests(), 0);
+        assert!(!manager.is_shutting_down());
+    }
+
+    #[test]
+    fn test_shutdown_manager_clone() {
+        let manager = ShutdownManager::new();
+        let cloned = manager.clone();
+        assert_eq!(manager.get_active_requests(), cloned.get_active_requests());
+    }
+
+    #[test]
+    fn test_request_started_increments() {
+        let manager = ShutdownManager::new();
+        assert_eq!(manager.get_active_requests(), 0);
+        manager.request_started();
+        assert_eq!(manager.get_active_requests(), 1);
+        manager.request_started();
+        assert_eq!(manager.get_active_requests(), 2);
+    }
+
+    #[test]
+    fn test_request_completed_decrements() {
+        let manager = ShutdownManager::new();
+        manager.request_started();
+        manager.request_started();
+        assert_eq!(manager.get_active_requests(), 2);
+        manager.request_completed();
+        assert_eq!(manager.get_active_requests(), 1);
+        manager.request_completed();
+        assert_eq!(manager.get_active_requests(), 0);
+    }
+
+    #[test]
+    fn test_is_shutting_down() {
+        let manager = ShutdownManager::new();
+        assert!(!manager.is_shutting_down());
+    }
+
+    #[test]
+    fn test_should_accept_request() {
+        let manager = ShutdownManager::new();
+        assert!(manager.should_accept_request());
+    }
+
+    #[tokio::test]
+    async fn test_mark_ready() {
+        let manager = ShutdownManager::new();
+        manager.mark_ready().await;
+        assert!(manager.is_ready().await);
+    }
+
+    #[tokio::test]
+    async fn test_is_alive_when_ready() {
+        let manager = ShutdownManager::new();
+        manager.mark_ready().await;
+        assert!(manager.is_alive().await);
+    }
+
+    #[tokio::test]
+    async fn test_is_alive_when_starting() {
+        let manager = ShutdownManager::new();
+        assert!(manager.is_alive().await);
+    }
+
+    #[tokio::test]
+    async fn test_get_state() {
+        let manager = ShutdownManager::new();
+        assert_eq!(manager.get_state().await, ServerState::Starting);
+        manager.mark_ready().await;
+        assert_eq!(manager.get_state().await, ServerState::Ready);
+    }
+
+    #[tokio::test]
+    async fn test_initiate_shutdown() {
+        let manager = ShutdownManager::new();
+        manager.mark_ready().await;
+        manager.initiate_shutdown().await;
+        assert!(manager.is_shutting_down());
+        assert_eq!(manager.get_state().await, ServerState::ShuttingDown);
+    }
+
+    #[tokio::test]
+    async fn test_mark_stopped() {
+        let manager = ShutdownManager::new();
+        manager.mark_stopped().await;
+        assert_eq!(manager.get_state().await, ServerState::Stopped);
+    }
+
+    #[test]
+    fn test_uptime_tracker_new() {
+        let tracker = UptimeTracker::new();
+        assert!(tracker.uptime_secs() >= 0);
+    }
+
+    #[test]
+    fn test_uptime_tracker_default() {
+        let tracker = UptimeTracker::default();
+        assert!(tracker.uptime_secs() >= 0);
+    }
+
+    #[test]
+    fn test_uptime_tracker_increases() {
+        let tracker = UptimeTracker::new();
+        let uptime1 = tracker.uptime_secs();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let uptime2 = tracker.uptime_secs();
+        assert!(uptime2 >= uptime1);
+    }
+}

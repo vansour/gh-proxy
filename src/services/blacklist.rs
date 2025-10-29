@@ -95,3 +95,47 @@ pub async fn check_blacklist(state: &AppState, client_ip: Option<String>) -> Pro
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_blacklist_cache_new() {
+        let cache = BlacklistCache::new();
+        assert_eq!(cache.rules.len(), 0);
+        assert_eq!(cache.last_modified, None);
+    }
+
+    #[test]
+    fn test_is_ip_blacklisted_exact_match() {
+        let blacklist = vec!["192.168.1.1".to_string(), "10.0.0.1".to_string()];
+        assert!(is_ip_blacklisted("192.168.1.1", &blacklist));
+        assert!(is_ip_blacklisted("10.0.0.1", &blacklist));
+    }
+
+    #[test]
+    fn test_is_ip_blacklisted_no_match() {
+        let blacklist = vec!["192.168.1.1".to_string()];
+        assert!(!is_ip_blacklisted("192.168.1.2", &blacklist));
+        assert!(!is_ip_blacklisted("10.0.0.1", &blacklist));
+    }
+
+    #[test]
+    fn test_is_ip_blacklisted_empty_list() {
+        let blacklist: Vec<String> = vec![];
+        assert!(!is_ip_blacklisted("192.168.1.1", &blacklist));
+    }
+
+    #[test]
+    fn test_is_ip_blacklisted_multiple_items() {
+        let blacklist = vec![
+            "192.168.1.0/24".to_string(),
+            "10.0.0.1".to_string(),
+            "172.16.0.0/12".to_string(),
+        ];
+        // Exact matches should work
+        assert!(is_ip_blacklisted("10.0.0.1", &blacklist));
+        assert!(is_ip_blacklisted("192.168.1.0/24", &blacklist));
+    }
+}

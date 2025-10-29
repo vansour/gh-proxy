@@ -177,18 +177,148 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
         url.split_at(pos + "github.com".len()).1
     } else if let Some(pos) = url.find("githubusercontent.com") {
         url.split_at(pos + "githubusercontent.com".len()).1
-    } else {
-        if let Some(slash_pos) = url.find("://") {
-            if let Some(next_slash) = url[slash_pos + 3..].find('/') {
-                &url[slash_pos + 3 + next_slash..]
-            } else {
-                ""
-            }
+    } else if let Some(slash_pos) = url.find("://") {
+        if let Some(next_slash) = url[slash_pos + 3..].find('/') {
+            &url[slash_pos + 3 + next_slash..]
         } else {
-            return false;
+            ""
         }
+    } else {
+        return false;
     };
     let after_domain = after_domain.trim_start_matches('/').trim_end_matches('/');
     let parts: Vec<&str> = after_domain.split('/').collect();
     parts.len() == 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_github_domain_releases() {
+        assert_eq!(
+            detect_github_domain("owner/repo/releases/download/v1.0/file.tar.gz"),
+            "github.com"
+        );
+    }
+
+    #[test]
+    fn test_detect_github_domain_archive() {
+        assert_eq!(
+            detect_github_domain("owner/repo/zipball/main"),
+            "codeload.github.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/tarball/main"),
+            "codeload.github.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/tar.gz/main"),
+            "codeload.github.com"
+        );
+        assert_eq!(
+            detect_github_domain("owner/repo/zip/main"),
+            "codeload.github.com"
+        );
+    }
+
+    #[test]
+    fn test_detect_github_domain_default() {
+        assert_eq!(
+            detect_github_domain("owner/repo/file.txt"),
+            "raw.githubusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_convert_github_blob_to_raw() {
+        let url = "https://github.com/owner/repo/blob/main/file.txt";
+        let result = convert_github_blob_to_raw(url);
+        assert_eq!(
+            result,
+            "https://raw.githubusercontent.com/owner/repo/main/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_convert_github_blob_to_raw_no_blob() {
+        let url = "https://github.com/owner/repo/raw/main/file.txt";
+        let result = convert_github_blob_to_raw(url);
+        assert_eq!(result, url);
+    }
+
+    #[test]
+    fn test_convert_github_blob_to_raw_generic_blob() {
+        let url = "https://example.com/blob/main/file.txt";
+        let result = convert_github_blob_to_raw(url);
+        assert_eq!(result, "https://example.com/main/file.txt");
+    }
+
+    #[test]
+    fn test_is_github_web_only_path_releases() {
+        assert!(is_github_web_only_path("/releases/tag/v1.0"));
+        assert!(is_github_web_only_path("/releases/"));
+    }
+
+    #[test]
+    fn test_is_github_web_only_path_download() {
+        // /releases/download/ is NOT a web-only path
+        assert!(!is_github_web_only_path(
+            "/releases/download/v1.0/file.tar.gz"
+        ));
+    }
+
+    #[test]
+    fn test_is_github_web_only_path_api() {
+        assert!(!is_github_web_only_path("api.github.com/repos/owner/repo"));
+    }
+
+    #[test]
+    fn test_is_github_web_only_path_actions() {
+        assert!(is_github_web_only_path("/actions/runs/123"));
+    }
+
+    #[test]
+    fn test_is_github_web_only_path_issues() {
+        assert!(is_github_web_only_path("/issues/123"));
+    }
+
+    #[test]
+    fn test_is_github_web_only_path_file() {
+        assert!(!is_github_web_only_path("/owner/repo/file.txt"));
+    }
+
+    #[test]
+    fn test_is_github_repo_homepage_two_parts() {
+        assert!(is_github_repo_homepage("https://github.com/owner/repo"));
+        assert!(is_github_repo_homepage("github.com/owner/repo"));
+    }
+
+    #[test]
+    fn test_is_github_repo_homepage_file_path() {
+        assert!(!is_github_repo_homepage(
+            "https://github.com/owner/repo/blob/main/file.txt"
+        ));
+        assert!(!is_github_repo_homepage(
+            "https://github.com/owner/repo/tree/main"
+        ));
+    }
+
+    #[test]
+    fn test_is_github_repo_homepage_api() {
+        assert!(!is_github_repo_homepage("api.github.com/repos/owner/repo"));
+    }
+
+    #[test]
+    fn test_is_github_repo_homepage_raw_github() {
+        assert!(!is_github_repo_homepage(
+            "https://raw.githubusercontent.com/owner/repo/main/file.txt"
+        ));
+    }
+
+    #[test]
+    fn test_is_github_repo_homepage_non_github() {
+        assert!(!is_github_repo_homepage("https://example.com/owner/repo"));
+    }
 }

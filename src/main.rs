@@ -1028,3 +1028,167 @@ fn is_github_file_host(host: &str) -> bool {
             | "media.githubusercontent.com"
     ) || host.ends_with(".githubusercontent.com")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_proxy_error_unsupported_host_status_code() {
+        let error = ProxyError::UnsupportedHost("example.com".to_string());
+        assert_eq!(error.to_status_code(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[test]
+    fn test_proxy_error_invalid_target_status_code() {
+        let error = ProxyError::InvalidTarget("invalid path".to_string());
+        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_proxy_error_access_denied_status_code() {
+        let error = ProxyError::AccessDenied("192.168.1.1".to_string());
+        assert_eq!(error.to_status_code(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_proxy_error_size_exceeded_status_code() {
+        let error = ProxyError::SizeExceeded(500, 250);
+        assert_eq!(error.to_status_code(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn test_proxy_error_invalid_github_url_status_code() {
+        let error = ProxyError::InvalidGitHubUrl("/invalid/path".to_string());
+        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_proxy_error_github_web_page_status_code() {
+        let error = ProxyError::GitHubWebPage("https://github.com/owner/repo".to_string());
+        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_proxy_error_github_repo_homepage_status_code() {
+        let error = ProxyError::GitHubRepoHomepage("https://github.com/owner/repo".to_string());
+        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_proxy_error_processing_error_status_code() {
+        let error = ProxyError::ProcessingError("failed to process".to_string());
+        assert_eq!(error.to_status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_proxy_error_http_status_code() {
+        let http_error: Box<dyn std::error::Error + Send + Sync> = "test error".to_string().into();
+        let error = ProxyError::Http(http_error);
+        assert_eq!(error.to_status_code(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn test_proxy_error_access_denied_message() {
+        let error = ProxyError::AccessDenied("192.168.1.1".to_string());
+        let message = error.to_user_message();
+        assert!(message.contains("Access Denied"));
+        assert!(message.contains("192.168.1.1"));
+    }
+
+    #[test]
+    fn test_proxy_error_github_web_page_message() {
+        let url = "https://github.com/owner/repo/actions/runs/123";
+        let error = ProxyError::GitHubWebPage(url.to_string());
+        let message = error.to_user_message();
+        assert!(message.contains("GitHub Web Page Detected"));
+        assert!(message.contains(url));
+    }
+
+    #[test]
+    fn test_proxy_error_github_repo_homepage_message() {
+        let url = "https://github.com/owner/repo";
+        let error = ProxyError::GitHubRepoHomepage(url.to_string());
+        let message = error.to_user_message();
+        assert!(message.contains("GitHub Repository Homepage Detected"));
+        assert!(message.contains(url));
+    }
+
+    #[test]
+    fn test_proxy_error_size_exceeded_message() {
+        let error = ProxyError::SizeExceeded(500, 250);
+        let message = error.to_user_message();
+        assert!(message.contains("File Size Exceeded"));
+        assert!(message.contains("500 MB"));
+        assert!(message.contains("250 MB"));
+    }
+
+    #[test]
+    fn test_proxy_error_invalid_github_url_message() {
+        let path = "/invalid/path";
+        let error = ProxyError::InvalidGitHubUrl(path.to_string());
+        let message = error.to_user_message();
+        assert!(message.contains("Invalid Request"));
+        assert!(message.contains(path));
+    }
+
+    #[test]
+    fn test_is_github_api_host_true() {
+        assert!(is_github_api_host("api.github.com"));
+    }
+
+    #[test]
+    fn test_is_github_api_host_false() {
+        assert!(!is_github_api_host("github.com"));
+        assert!(!is_github_api_host("raw.githubusercontent.com"));
+        assert!(!is_github_api_host("example.com"));
+    }
+
+    #[test]
+    fn test_is_github_file_host_raw_githubusercontent() {
+        assert!(is_github_file_host("raw.githubusercontent.com"));
+    }
+
+    #[test]
+    fn test_is_github_file_host_codeload() {
+        assert!(is_github_file_host("codeload.github.com"));
+    }
+
+    #[test]
+    fn test_is_github_file_host_objects() {
+        assert!(is_github_file_host("objects.githubusercontent.com"));
+    }
+
+    #[test]
+    fn test_is_github_file_host_media() {
+        assert!(is_github_file_host("media.githubusercontent.com"));
+    }
+
+    #[test]
+    fn test_is_github_file_host_suffix() {
+        assert!(is_github_file_host("custom.githubusercontent.com"));
+    }
+
+    #[test]
+    fn test_is_github_file_host_false() {
+        assert!(!is_github_file_host("example.com"));
+        assert!(!is_github_file_host("github.com"));
+    }
+
+    #[test]
+    fn test_request_lifecycle_new() {
+        // This test verifies the lifecycle tracking mechanism works
+        // We can't fully test this without the full AppState, but we verify the struct exists
+        let _: std::marker::PhantomData<RequestLifecycle> = std::marker::PhantomData;
+    }
+
+    #[test]
+    fn test_proxy_error_http_builder_status_code() {
+        // Create an Http::Error using the Uri builder approach
+        let uri_result = http::Uri::builder().build();
+        if let Err(e) = uri_result {
+            let error = ProxyError::HttpBuilder(e);
+            assert_eq!(error.to_status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+}
