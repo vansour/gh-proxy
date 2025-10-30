@@ -32,6 +32,20 @@ pub fn add_proxy_to_html_urls<'a>(content: &'a str, proxy_url: &str) -> Cow<'a, 
     rewrite_with_regex(regex_utils::get_link_pattern(), content, proxy_url_str)
 }
 
+/// Rewrites URLs in `content` that match the given `regex` by prepending `proxy_url` to them.
+///
+/// # Parameters
+/// - `regex`: The regular expression used to find URLs to rewrite.
+/// - `content`: The input string containing URLs. The returned value may borrow from this string.
+/// - `proxy_url`: The proxy URL to prepend to matched URLs.
+///
+/// # Return
+/// Returns a `Cow<'a, str>`:
+/// - If no URLs are rewritten, returns `Cow::Borrowed(content)`.
+/// - If any URLs are rewritten, returns `Cow::Owned(String)` with the modified content.
+///
+/// # Lifetimes
+/// The returned value borrows from `content` unless rewriting occurs, in which case an owned `String` is returned.
 fn rewrite_with_regex<'a>(regex: &Regex, content: &'a str, proxy_url: &str) -> Cow<'a, str> {
     let mut buffer: Option<String> = None;
     let mut last = 0;
