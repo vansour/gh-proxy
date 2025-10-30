@@ -8,6 +8,9 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
+// Buffer size for blacklist event channel.
+// 32 was chosen as a reasonable default to handle bursts of file events
+// without overwhelming the channel, based on expected event rates and system usage.
 const BLACKLIST_EVENT_BUFFER: usize = 32;
 const BLACKLIST_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 
