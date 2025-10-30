@@ -5,10 +5,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GitHub 文件加速</title>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+    
+    <!-- 预连接到字体服务器，加快后续请求 -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- 加载 Roboto 字体，使用 display=swap 确保字体加载前显示后备字体 -->
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- 加载 Material Symbols 图标字体，使用 display=swap -->
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
+    
+    <!-- 本地样式表 -->
     <link rel="stylesheet" href="style.css">
 </head>
 
@@ -20,7 +28,6 @@
 
         <main class="content">
             <div class="card input-card">
-                <p class="input-card__description">为 GitHub 文件访问提供加速服务</p>
                 <form id="github-form" class="input-card__form">
                     <div class="text-field">
                         <input type="text" class="text-field__input" id="githubLinkInput" placeholder="请在此处输入 GitHub 链接">
@@ -58,7 +65,7 @@
                         </button>
                     </div>
                 </div>
-                <p class="helper-text">全面支持 Release、Archive、文件及 Git 仓库链接的转换。</p>
+                <p class="helper-text">全面支持 Release、Archive、API、文件及 Git 仓库链接的转换。</p>
             </div>
 
             <div class="status-cards">
@@ -91,6 +98,9 @@
     <div class="toast" id="toast">
         <div class="toast__message" id="toastMessage"></div>
     </div>
+
+    <!-- 版本信息（右下角），将由前端从 /healthz 获取并注入 -->
+    <div class="version-badge" id="versionBadge" title="版本：获取中">v…</div>
 
     <script src="script.js"></script>
 </body>

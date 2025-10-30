@@ -1,19 +1,19 @@
 /* Material Design 3 Color Tokens */
 :root {
-    /* 主题基色 */
+    /* 主题基色 - 天蓝色系 */
     --md-ref-palette-primary0: #000000;
-    --md-ref-palette-primary10: #001F28;
-    --md-ref-palette-primary20: #003544;
-    --md-ref-palette-primary30: #004D61;
-    --md-ref-palette-primary40: #006780;
-    --md-ref-palette-primary50: #0082A0;
-    --md-ref-palette-primary60: #009DCF;
-    --md-ref-palette-primary70: #3AB6E9;
-    --md-ref-palette-primary80: #62D4FF;
-    --md-ref-palette-primary90: #B8EAFF;
-    --md-ref-palette-primary95: #DCF5FF;
-    --md-ref-palette-primary98: #F1FAFF;
-    --md-ref-palette-primary99: #F8FDFF;
+    --md-ref-palette-primary10: #001D3D;
+    --md-ref-palette-primary20: #003A66;
+    --md-ref-palette-primary30: #004D8F;
+    --md-ref-palette-primary40: #0061B8;
+    --md-ref-palette-primary50: #0075D8;
+    --md-ref-palette-primary60: #2E8FFF;
+    --md-ref-palette-primary70: #5BA3FF;
+    --md-ref-palette-primary80: #87BBFF;
+    --md-ref-palette-primary90: #B8D4FF;
+    --md-ref-palette-primary95: #D4E3FF;
+    --md-ref-palette-primary98: #ECF0FF;
+    --md-ref-palette-primary99: #F8FAFF;
     --md-ref-palette-primary100: #FFFFFF;
 
     /* 系统颜色角色 */
@@ -21,49 +21,57 @@
     --md-sys-color-on-primary: var(--md-ref-palette-primary100);
     --md-sys-color-primary-container: var(--md-ref-palette-primary90);
     --md-sys-color-on-primary-container: var(--md-ref-palette-primary10);
-    --md-sys-color-secondary: #4E6262;
+    --md-sys-color-secondary: #5B6B7A;
     --md-sys-color-on-secondary: #FFFFFF;
-    --md-sys-color-secondary-container: #D1E7E6;
-    --md-sys-color-on-secondary-container: #091F1F;
-    --md-sys-color-tertiary: #5C5D7E;
+    --md-sys-color-secondary-container: #DFE3F0;
+    --md-sys-color-on-secondary-container: #172534;
+    --md-sys-color-tertiary: #6B5B8F;
     --md-sys-color-on-tertiary: #FFFFFF;
-    --md-sys-color-tertiary-container: #E2E0FF;
-    --md-sys-color-on-tertiary-container: #191A37;
+    --md-sys-color-tertiary-container: #F0E8FF;
+    --md-sys-color-on-tertiary-container: #251A47;
     --md-sys-color-error: #BA1A1A;
     --md-sys-color-on-error: #FFFFFF;
     --md-sys-color-error-container: #FFDAD6;
     --md-sys-color-on-error-container: #410002;
-    --md-sys-color-background: #FAFDFD;
-    --md-sys-color-on-background: #191C1C;
-    --md-sys-color-surface: #FAFDFD;
-    --md-sys-color-on-surface: #191C1C;
-    --md-sys-color-surface-variant: #DAE4E5;
-    --md-sys-color-on-surface-variant: #3F4849;
-    --md-sys-color-outline: #6F7979;
-    --md-sys-color-outline-variant: #BFC8C9;
+    --md-sys-color-background: #FAFDFF;
+    --md-sys-color-on-background: #191C1E;
+    --md-sys-color-surface: #FAFDFF;
+    --md-sys-color-on-surface: #191C1E;
+    --md-sys-color-surface-variant: #DDE3EB;
+    --md-sys-color-on-surface-variant: #464C54;
+    --md-sys-color-outline: #777E86;
+    --md-sys-color-outline-variant: #C0C7CF;
     --md-sys-color-shadow: #000000;
     --md-sys-color-scrim: #000000;
-    --md-sys-color-inverse-surface: #2E3131;
-    --md-sys-color-inverse-on-surface: #EFF1F1;
+    --md-sys-color-inverse-surface: #2E3134;
+    --md-sys-color-inverse-on-surface: #F0F1F3;
     --md-sys-color-inverse-primary: var(--md-ref-palette-primary80);
-    --md-sys-color-surface-dim: #D9DDDD;
-    --md-sys-color-surface-bright: #FAFDFD;
+    --md-sys-color-surface-dim: #D9DDE0;
+    --md-sys-color-surface-bright: #FAFDFF;
     --md-sys-color-surface-container-lowest: #FFFFFF;
-    --md-sys-color-surface-container-low: #F3F7F7;
-    --md-sys-color-surface-container: #EDF1F2;
-    --md-sys-color-surface-container-high: #E7EBEC;
-    --md-sys-color-surface-container-highest: #E1E5E6;
+    --md-sys-color-surface-container-low: #F3F7FA;
+    --md-sys-color-surface-container: #EEF1F5;
+    --md-sys-color-surface-container-high: #E8ECEF;
+    --md-sys-color-surface-container-highest: #E2E7EA;
+
+    /* Elevation Tokens */
+    --md-sys-elevation-0: none;
+    --md-sys-elevation-1: 0 1px 3px 1px rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+    --md-sys-elevation-2: 0 2px 6px 2px rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+    --md-sys-elevation-3: 0 3px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+    --md-sys-elevation-4: 0 4px 12px 4px rgba(0, 0, 0, 0.15), 0 2px 4px 0 rgba(0, 0, 0, 0.3);
+    --md-sys-elevation-5: 0 5px 16px 5px rgba(0, 0, 0, 0.15), 0 2px 5px 0 rgba(0, 0, 0, 0.3);
 
     /* Typescale Tokens */
-    --md-sys-typescale-label-large-font: 'Roboto', sans-serif;
+    --md-sys-typescale-label-large-font: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --md-sys-typescale-label-large-weight: 500;
     --md-sys-typescale-label-large-size: 14px;
     --md-sys-typescale-label-large-line-height: 20px;
-    --md-sys-typescale-body-large-font: 'Roboto', sans-serif;
+    --md-sys-typescale-body-large-font: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --md-sys-typescale-body-large-weight: 400;
     --md-sys-typescale-body-large-size: 16px;
     --md-sys-typescale-body-large-line-height: 24px;
-    --md-sys-typescale-headline-small-font: 'Roboto', sans-serif;
+    --md-sys-typescale-headline-small-font: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --md-sys-typescale-headline-small-weight: 400;
     --md-sys-typescale-headline-small-size: 24px;
     --md-sys-typescale-headline-small-line-height: 32px;
@@ -76,43 +84,43 @@
         --md-sys-color-on-primary: var(--md-ref-palette-primary20);
         --md-sys-color-primary-container: var(--md-ref-palette-primary30);
         --md-sys-color-on-primary-container: var(--md-ref-palette-primary90);
-        --md-sys-color-secondary: #B5CBCB;
-        --md-sys-color-on-secondary: #203333;
-        --md-sys-color-secondary-container: #374A4A;
-        --md-sys-color-on-secondary-container: #D1E7E6;
-        --md-sys-color-tertiary: #C5C4EB;
-        --md-sys-color-on-tertiary: #2E2F4D;
-        --md-sys-color-tertiary-container: #444564;
-        --md-sys-color-on-tertiary-container: #E2E0FF;
+        --md-sys-color-secondary: #C3CADB;
+        --md-sys-color-on-secondary: #2D3E4F;
+        --md-sys-color-secondary-container: #455166;
+        --md-sys-color-on-secondary-container: #DFE3F0;
+        --md-sys-color-tertiary: #D7CAFF;
+        --md-sys-color-on-tertiary: #3D345F;
+        --md-sys-color-tertiary-container: #554877;
+        --md-sys-color-on-tertiary-container: #F0E8FF;
         --md-sys-color-error: #FFB4AB;
         --md-sys-color-on-error: #690005;
         --md-sys-color-error-container: #93000A;
         --md-sys-color-on-error-container: #FFB4AB;
-        --md-sys-color-background: #191C1C;
-        --md-sys-color-on-background: #E1E3E3;
-        --md-sys-color-surface: #191C1C;
-        --md-sys-color-on-surface: #E1E3E3;
-        --md-sys-color-surface-variant: #3F4849;
-        --md-sys-color-on-surface-variant: #BFC8C9;
-        --md-sys-color-outline: #899293;
-        --md-sys-color-outline-variant: #3F4849;
+        --md-sys-color-background: #191C1E;
+        --md-sys-color-on-background: #E2E7EC;
+        --md-sys-color-surface: #191C1E;
+        --md-sys-color-on-surface: #E2E7EC;
+        --md-sys-color-surface-variant: #464C54;
+        --md-sys-color-on-surface-variant: #C0C7CF;
+        --md-sys-color-outline: #8A919A;
+        --md-sys-color-outline-variant: #464C54;
         --md-sys-color-shadow: #000000;
         --md-sys-color-scrim: #000000;
-        --md-sys-color-inverse-surface: #E1E3E3;
-        --md-sys-color-inverse-on-surface: #191C1C;
+        --md-sys-color-inverse-surface: #E2E7EC;
+        --md-sys-color-inverse-on-surface: #191C1E;
         --md-sys-color-inverse-primary: var(--md-ref-palette-primary40);
-        --md-sys-color-surface-dim: #101414;
-        --md-sys-color-surface-bright: #363A3A;
-        --md-sys-color-surface-container-lowest: #0E1111;
-        --md-sys-color-surface-container-low: #191C1C;
-        --md-sys-color-surface-container: #1D2020;
-        --md-sys-color-surface-container-high: #272B2B;
-        --md-sys-color-surface-container-highest: #323636;
+        --md-sys-color-surface-dim: #101214;
+        --md-sys-color-surface-bright: #37404A;
+        --md-sys-color-surface-container-lowest: #0D0F13;
+        --md-sys-color-surface-container-low: #191C1E;
+        --md-sys-color-surface-container: #1D2125;
+        --md-sys-color-surface-container-high: #27292F;
+        --md-sys-color-surface-container-highest: #323639;
     }
 }
 
 body {
-    font-family: 'Roboto', sans-serif;
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background-color: var(--md-sys-color-surface);
     color: var(--md-sys-color-on-surface);
     margin: 0;
@@ -294,8 +302,8 @@ body {
 }
 .button--icon > .material-symbols-outlined { font-size: 18px; }
 
-:root { --md-sys-color-primary-rgb: 0, 103, 128; }
-@media (prefers-color-scheme: dark) { :root { --md-sys-color-primary-rgb: 98, 212, 255; } }
+:root { --md-sys-color-primary-rgb: 0, 97, 184; }
+@media (prefers-color-scheme: dark) { :root { --md-sys-color-primary-rgb: 135, 187, 255; } }
 
 .output-area {
     position: relative;
@@ -351,7 +359,20 @@ body {
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background-color: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface); padding: 12px 20px; border-radius: 4px; box-shadow: 0 2px 5px 0 rgba(0,0,0,.26); z-index: 1000; opacity: 0; transition: opacity 0.3s ease, transform 0.3s ease; pointer-events: none; }
 .toast--visible { opacity: 1; transform: translateX(-50%) translateY(-20px); }
 
-.version-badge { position: fixed; bottom: 20px; right: 20px; background-color: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); padding: 6px 12px; border-radius: 20px; font-size: 12px; box-shadow: var(--md-sys-elevation-1); }
+.version-badge {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-on-secondary-container);
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    box-shadow: var(--md-sys-elevation-1);
+    opacity: 0.92;
+    pointer-events: none; /* 不拦截点击 */
+    z-index: 1001;
+}
 
 .format-selector { display: flex; flex-direction: column; gap: 12px; }
 .format-selector__label { font-size: var(--md-sys-typescale-label-large-size); color: var(--md-sys-color-on-surface-variant); font-weight: 500; padding-left: 4px; }
