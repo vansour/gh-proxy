@@ -6,13 +6,15 @@ use axum::{
     routing::{any, get},
 };
 use bytes::Bytes;
-use config::{AuthConfig, GitHubConfig, Settings};
+use config::{GitHubConfig, Settings};
 use futures_util::{Stream, StreamExt};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, header};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use std::{
+    borrow::Cow,
+    convert::TryFrom,
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
@@ -20,7 +22,6 @@ use std::{
     time::Duration,
 };
 use tokio::signal;
-use tokio::sync::OnceCell;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, instrument, warn};
 mod api;
@@ -35,10 +36,10 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     pub github_config: Arc<GitHubConfig>,
     pub client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
-    pub blacklist_cache:
-        Arc<OnceCell<Arc<tokio::sync::RwLock<services::blacklist::BlacklistCache>>>>,
+    pub blacklist: services::blacklist::BlacklistState,
     pub shutdown_manager: services::shutdown::ShutdownManager,
     pub uptime_tracker: Arc<services::shutdown::UptimeTracker>,
+    pub auth_header: Option<HeaderValue>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -166,6 +167,8 @@ fn error_response(error: ProxyError) -> Response<Body> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::load()?;
+    let blacklist_state =
+        services::blacklist::BlacklistState::initialize(settings.blacklist.clone()).await;
     infra::log::setup_tracing(&settings.log);
     info!("Starting gh-proxy server");
     info!("Log level: {}", settings.log.get_level());
@@ -180,15 +183,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr: SocketAddr = settings.server.bind_addr().parse()?;
     let client = services::client::build_client(&settings.server);
     let github_config = GitHubConfig::new(&settings.auth.token, &settings.proxy);
+    let auth_header = settings
+        .auth
+        .authorization_header()
+        .map_err(|err| format!("invalid authorization header value: {err}"))?;
     let shutdown_manager = services::shutdown::ShutdownManager::new();
     let uptime_tracker = Arc::new(services::shutdown::UptimeTracker::new());
+    let settings = Arc::new(settings);
     let app_state = AppState {
-        settings: Arc::new(settings),
+        settings: Arc::clone(&settings),
         github_config: Arc::new(github_config),
         client,
-        blacklist_cache: Arc::new(OnceCell::new()),
+        blacklist: blacklist_state,
         shutdown_manager,
         uptime_tracker,
+        auth_header,
     };
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -294,56 +303,52 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
         "resolve_fallback_target - Input URI: {}, path: '{}', query: {:?}",
         uri, path, query
     );
-    let path = path.trim_start_matches('/');
-    debug!("After trim_start_matches('/'): '{}'", path);
-    let path = if path.starts_with("https:/") && !path.starts_with("https://") {
-        let after_scheme = &path[7..];
-        debug!(
-            "Fixed malformed https:/ URL - raw: '{}' -> normalized: 'https://{}'",
-            path, after_scheme
-        );
-        format!("https://{}", after_scheme)
-    } else if path.starts_with("http:/") && !path.starts_with("http://") {
-        let after_scheme = &path[6..];
-        debug!(
-            "Fixed malformed http:/ URL - raw: '{}' -> normalized: 'http://{}'",
-            path, after_scheme
-        );
-        format!("http://{}", after_scheme)
-    } else {
-        debug!("No malformation detected, path as-is: '{}'", path);
-        path.to_string()
-    };
-    debug!("After URL malformation fix: '{}'", path);
-    if path.starts_with("http://") || path.starts_with("https://") {
-        let converted = providers::github::convert_github_blob_to_raw(&path);
-        let uri_with_query = if let Some(q) = query {
-            format!("{}?{}", converted, q)
+    let trimmed = path.trim_start_matches('/');
+    debug!("After trim_start_matches('/'): '{}'", trimmed);
+    let normalized: Cow<'_, str> =
+        if trimmed.starts_with("https:/") && !trimmed.starts_with("https://") {
+            let after_scheme = &trimmed[7..];
+            debug!(
+                "Fixed malformed https:/ URL - raw: '{}' -> normalized: 'https://{}'",
+                trimmed, after_scheme
+            );
+            Cow::Owned(format!("https://{}", after_scheme))
+        } else if trimmed.starts_with("http:/") && !trimmed.starts_with("http://") {
+            let after_scheme = &trimmed[6..];
+            debug!(
+                "Fixed malformed http:/ URL - raw: '{}' -> normalized: 'http://{}'",
+                trimmed, after_scheme
+            );
+            Cow::Owned(format!("http://{}", after_scheme))
         } else {
-            converted
+            debug!("No malformation detected, path as-is: '{}'", trimmed);
+            Cow::Borrowed(trimmed)
         };
-        debug!("Fallback target with query: {}", uri_with_query);
-        return uri_with_query
-            .parse()
-            .map_err(|e| format!("Invalid URL: {}", e));
+    debug!("After URL malformation fix: '{}'", normalized);
+    if normalized.starts_with("http://") || normalized.starts_with("https://") {
+        let mut converted = providers::github::convert_github_blob_to_raw(normalized.as_ref());
+        if let Some(q) = query {
+            converted.push('?');
+            converted.push_str(q);
+        }
+        debug!("Fallback target with query: {}", converted);
+        return converted.parse().map_err(|e| format!("Invalid URL: {}", e));
     }
-    if is_github_domain_path(&path) {
-        let full_url = format!("https://{}", path);
-        let converted = providers::github::convert_github_blob_to_raw(&full_url);
-        let uri_with_query = if let Some(q) = query {
-            format!("{}?{}", converted, q)
-        } else {
-            converted
-        };
-        debug!(
-            "Fallback GitHub domain target with query: {}",
-            uri_with_query
-        );
-        return uri_with_query
+    if is_github_domain_path(&normalized) {
+        let mut full_url = String::with_capacity("https://".len() + normalized.len());
+        full_url.push_str("https://");
+        full_url.push_str(normalized.as_ref());
+        let mut converted = providers::github::convert_github_blob_to_raw(&full_url);
+        if let Some(q) = query {
+            converted.push('?');
+            converted.push_str(q);
+        }
+        debug!("Fallback GitHub domain target with query: {}", converted);
+        return converted
             .parse()
             .map_err(|e| format!("Invalid GitHub URL: {}", e));
     }
-    Err(format!("No valid target found for path: {}", path))
+    Err(format!("No valid target found for path: {}", normalized))
 }
 fn is_github_domain_path(path: &str) -> bool {
     path.starts_with("github.com/")
@@ -359,53 +364,63 @@ fn is_shell_script(uri: &Uri) -> bool {
     path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh")
 }
 fn should_disable_compression_for_request(uri: &Uri) -> bool {
-    let path = uri.path().to_lowercase();
-    if path.ends_with(".sh") || path.ends_with(".bash") || path.ends_with(".zsh") {
+    fn has_extension(path: &str, ext: &str) -> bool {
+        path.rsplit_once('.')
+            .map(|(_, candidate)| candidate.eq_ignore_ascii_case(ext))
+            .unwrap_or(false)
+    }
+
+    fn ends_with_ignore_ascii(path: &str, suffix: &str) -> bool {
+        path.len() >= suffix.len() && path[path.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    }
+
+    let path = uri.path();
+    if has_extension(path, "sh") || has_extension(path, "bash") || has_extension(path, "zsh") {
         return true;
     }
-    if path.ends_with(".html")
-        || path.ends_with(".htm")
-        || path.ends_with(".xml")
-        || path.ends_with(".xhtml")
+    if has_extension(path, "html")
+        || has_extension(path, "htm")
+        || has_extension(path, "xml")
+        || has_extension(path, "xhtml")
     {
         return true;
     }
-    if path.ends_with(".md") || path.ends_with(".markdown") || path.ends_with(".txt") {
+    if has_extension(path, "md") || has_extension(path, "markdown") || has_extension(path, "txt") {
         return true;
     }
-    if path.ends_with(".json") || path.ends_with(".yaml") || path.ends_with(".yml") {
+    if has_extension(path, "json") || has_extension(path, "yaml") || has_extension(path, "yml") {
         return true;
     }
-    if path.ends_with(".tar.gz")
-        || path.ends_with(".tar")
-        || path.ends_with(".zip")
-        || path.ends_with(".7z")
-        || path.ends_with(".rar")
-    {
-        return false;
-    }
-    if path.ends_with(".exe")
-        || path.ends_with(".dll")
-        || path.ends_with(".so")
-        || path.ends_with(".dylib")
-        || path.ends_with(".bin")
-    {
-        return false;
-    }
-    if path.ends_with(".jpg")
-        || path.ends_with(".jpeg")
-        || path.ends_with(".png")
-        || path.ends_with(".gif")
-        || path.ends_with(".webp")
-        || path.ends_with(".svg")
+    if ends_with_ignore_ascii(path, ".tar.gz")
+        || has_extension(path, "tar")
+        || has_extension(path, "zip")
+        || has_extension(path, "7z")
+        || has_extension(path, "rar")
     {
         return false;
     }
-    if path.ends_with(".mp3")
-        || path.ends_with(".mp4")
-        || path.ends_with(".webm")
-        || path.ends_with(".wav")
-        || path.ends_with(".flac")
+    if has_extension(path, "exe")
+        || has_extension(path, "dll")
+        || has_extension(path, "so")
+        || has_extension(path, "dylib")
+        || has_extension(path, "bin")
+    {
+        return false;
+    }
+    if has_extension(path, "jpg")
+        || has_extension(path, "jpeg")
+        || has_extension(path, "png")
+        || has_extension(path, "gif")
+        || has_extension(path, "webp")
+        || has_extension(path, "svg")
+    {
+        return false;
+    }
+    if has_extension(path, "mp3")
+        || has_extension(path, "mp4")
+        || has_extension(path, "webm")
+        || has_extension(path, "wav")
+        || has_extension(path, "flac")
     {
         return false;
     }
@@ -491,7 +506,6 @@ pub async fn proxy_request(
     let mut redirect_count = 0;
     let mut current_uri = target_uri.clone();
     let initial_method = req.method().clone();
-    let initial_headers = req.headers().clone();
     let (mut req_parts, body) = req.into_parts();
     req_parts.uri = current_uri.clone();
     let mut body_bytes: Option<Bytes> = None;
@@ -521,7 +535,8 @@ pub async fn proxy_request(
         false
     };
     sanitize_request_headers(req.headers_mut(), disable_compression);
-    apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
+    apply_github_headers(req.headers_mut(), &current_uri, state.auth_header.as_ref());
+    let sanitized_headers = Arc::new(req.headers().clone());
     debug!(
         "Initial request method: {}, URI: {}",
         initial_method, current_uri
@@ -630,9 +645,9 @@ pub async fn proxy_request(
                 .uri(current_uri.clone())
                 .body(redirect_body)
                 .map_err(ProxyError::HttpBuilder)?;
-            *req.headers_mut() = initial_headers.clone();
-            sanitize_request_headers(req.headers_mut(), disable_compression);
-            apply_github_headers(req.headers_mut(), &current_uri, &state.settings.auth);
+            req.headers_mut()
+                .clone_from(Arc::as_ref(&sanitized_headers));
+            apply_github_headers(req.headers_mut(), &current_uri, state.auth_header.as_ref());
             continue;
         }
         break response;
@@ -680,7 +695,7 @@ pub async fn proxy_request(
                 return Err(error);
             }
         };
-        let body_bytes = match collect_body_with_limit(body, size_limit_mb).await {
+        let body_bytes = match collect_body_with_limit(body, size_limit_mb, content_length).await {
             Ok(bytes) => bytes,
             Err(err) => {
                 lifecycle.fail(Some(&err));
@@ -929,24 +944,44 @@ impl Stream for ProxyBodyStream {
         }
     }
 }
-async fn collect_body_with_limit(body: Incoming, size_limit_mb: u64) -> ProxyResult<Vec<u8>> {
+async fn collect_body_with_limit(
+    body: Incoming,
+    size_limit_mb: u64,
+    expected_length: Option<u64>,
+) -> ProxyResult<Vec<u8>> {
     let limit_bytes = size_limit_mb.saturating_mul(1024 * 1024);
     let mut total: u64 = 0;
-    let mut data = Vec::new();
+    let mut data = expected_length
+        .map(|len| {
+            let capped = if limit_bytes > 0 {
+                len.min(limit_bytes)
+            } else {
+                len
+            };
+            usize::try_from(capped).unwrap_or(0)
+        })
+        .map_or_else(Vec::new, Vec::with_capacity);
     let mut stream = body.into_data_stream();
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| {
             error!("Failed to read response body: {}", e);
             ProxyError::Http(Box::new(e))
         })?;
-        total = total.saturating_add(chunk.len() as u64);
-        if total > limit_bytes {
+        let chunk_len = chunk.len();
+        total = total.saturating_add(chunk_len as u64);
+        if limit_bytes > 0 && total > limit_bytes {
             let size_mb = std::cmp::max(1, total / 1024 / 1024);
             warn!(
                 "Streaming body exceeded limit: {} bytes ({} MB) > {} MB",
                 total, size_mb, size_limit_mb
             );
             return Err(ProxyError::SizeExceeded(size_mb, size_limit_mb));
+        }
+        if chunk_len > 0 {
+            let remaining_capacity = data.capacity().saturating_sub(data.len());
+            if remaining_capacity < chunk_len {
+                data.reserve(chunk_len - remaining_capacity);
+            }
         }
         data.extend_from_slice(&chunk);
     }
@@ -960,7 +995,10 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
                 text.len(),
                 proxy_url
             );
-            Ok(utils::url::add_proxy_to_github_urls(&text, proxy_url).into_bytes())
+            match utils::url::add_proxy_to_github_urls(&text, proxy_url) {
+                Cow::Borrowed(_) => Ok(text.into_bytes()),
+                Cow::Owned(updated) => Ok(updated.into_bytes()),
+            }
         }
         Err(err) => {
             let utf8_error = err.utf8_error();
@@ -970,7 +1008,10 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
                 "Shell script contains non-UTF-8 data ({}), applying lossy conversion",
                 utf8_error
             );
-            Ok(utils::url::add_proxy_to_github_urls(&lossy_text, proxy_url).into_bytes())
+            match utils::url::add_proxy_to_github_urls(lossy_text.as_ref(), proxy_url) {
+                Cow::Borrowed(_) => Ok(lossy_text.into_owned().into_bytes()),
+                Cow::Owned(updated) => Ok(updated.into_bytes()),
+            }
         }
     }
 }
@@ -982,7 +1023,10 @@ fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, S
                 text.len(),
                 proxy_url
             );
-            Ok(utils::url::add_proxy_to_html_urls(&text, proxy_url).into_bytes())
+            match utils::url::add_proxy_to_html_urls(&text, proxy_url) {
+                Cow::Borrowed(_) => Ok(text.into_bytes()),
+                Cow::Owned(updated) => Ok(updated.into_bytes()),
+            }
         }
         Err(err) => {
             let utf8_error = err.utf8_error();
@@ -992,41 +1036,56 @@ fn process_html_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, S
                 "HTML response contains non-UTF-8 data ({}), applying lossy conversion",
                 utf8_error
             );
-            Ok(utils::url::add_proxy_to_html_urls(&lossy_text, proxy_url).into_bytes())
+            match utils::url::add_proxy_to_html_urls(lossy_text.as_ref(), proxy_url) {
+                Cow::Borrowed(_) => Ok(lossy_text.into_owned().into_bytes()),
+                Cow::Owned(updated) => Ok(updated.into_bytes()),
+            }
         }
     }
 }
-fn apply_github_headers(headers: &mut HeaderMap, target_uri: &Uri, auth: &AuthConfig) {
-    if auth.has_token()
-        && let Ok(value) = HeaderValue::from_str(&format!("token {}", auth.token))
-    {
-        headers.insert(header::AUTHORIZATION, value);
+fn apply_github_headers(
+    headers: &mut HeaderMap,
+    target_uri: &Uri,
+    auth_header: Option<&HeaderValue>,
+) {
+    if let Some(value) = auth_header {
+        headers.insert(header::AUTHORIZATION, value.clone());
     }
-    if let Ok(value) = HeaderValue::from_str("gh-proxy/0.1.0") {
-        headers.insert(header::USER_AGENT, value);
-    }
-    if let Some(host) = target_uri.host().map(|h| h.to_ascii_lowercase()) {
-        if is_github_api_host(&host) {
+
+    headers.insert(
+        header::USER_AGENT,
+        HeaderValue::from_static("gh-proxy/0.1.0"),
+    );
+
+    if let Some(host) = target_uri.host() {
+        if is_github_api_host(host) {
             headers.insert(
                 header::ACCEPT,
                 HeaderValue::from_static("application/vnd.github.v3+json"),
             );
-        } else if is_github_file_host(&host) && !headers.contains_key(header::ACCEPT) {
+        } else if is_github_file_host(host) && !headers.contains_key(header::ACCEPT) {
             headers.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
         }
     }
 }
 fn is_github_api_host(host: &str) -> bool {
-    matches!(host, "api.github.com")
+    host.eq_ignore_ascii_case("api.github.com")
 }
 fn is_github_file_host(host: &str) -> bool {
-    matches!(
-        host,
-        "raw.githubusercontent.com"
-            | "codeload.github.com"
-            | "objects.githubusercontent.com"
-            | "media.githubusercontent.com"
-    ) || host.ends_with(".githubusercontent.com")
+    const EXACT_HOSTS: [&str; 4] = [
+        "raw.githubusercontent.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "media.githubusercontent.com",
+    ];
+
+    EXACT_HOSTS
+        .iter()
+        .any(|candidate| host.eq_ignore_ascii_case(candidate))
+        || host_ends_with_ignore_ascii_case(host, ".githubusercontent.com")
+}
+fn host_ends_with_ignore_ascii_case(host: &str, suffix: &str) -> bool {
+    host.len() >= suffix.len() && host[host.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 #[cfg(test)]
