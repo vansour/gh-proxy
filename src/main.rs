@@ -976,12 +976,7 @@ async fn collect_body_with_limit(
             );
             return Err(ProxyError::SizeExceeded(size_mb, size_limit_mb));
         }
-        if expected_length.is_none() {
-            let remaining_capacity = data.capacity().saturating_sub(data.len());
-            if remaining_capacity < chunk_len {
-                data.reserve(chunk_len - remaining_capacity);
-            }
-        }
+        // No need to manually reserve capacity; Vec handles this internally.
         data.extend_from_slice(&chunk);
     }
     Ok(data)
