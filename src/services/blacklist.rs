@@ -121,7 +121,7 @@ impl BlacklistState {
     }
 
     pub async fn current_rules(&self) -> Arc<Vec<BlacklistRule>> {
-        Arc::clone(&self.rules.read().await)
+        Arc::clone(&*self.rules.read().await)
     }
 }
 
@@ -179,6 +179,9 @@ fn spawn_blacklist_watcher(
                 *guard = Arc::clone(&cache.rules);
             }
         }
+
+        // Keep the watcher alive until the task completes
+        let _watcher = watcher;
     });
 }
 
