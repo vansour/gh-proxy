@@ -21,5 +21,6 @@ hyper-rustls = { version = "0.27.7", features = ["http1", "http2", "webpki-roots
 tower-http = { version = "0.6.6", features = ["trace", "fs", "cors"] }
 regex = "1.12.2"
 bytes = "1.10.1"
+notify = "6.1.1"
 [dev-dependencies]
 tempfile = "3.23.0"
