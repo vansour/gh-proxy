@@ -174,7 +174,6 @@ fn spawn_blacklist_watcher(
 
         // Explicitly drop the sender to close the channel when the watcher closure no longer needs to send.
         // This ensures the receive loop terminates gracefully when no more events can arrive.
-        drop(tx);
 
         while rx.recv().await.is_some() {
             time::sleep(BLACKLIST_RELOAD_DEBOUNCE).await;
