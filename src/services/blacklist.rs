@@ -4,13 +4,13 @@ use std::time::SystemTime;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 pub struct BlacklistCache {
-    rules: Vec<String>,
+    rules: Arc<Vec<String>>,
     last_modified: Option<SystemTime>,
 }
 impl BlacklistCache {
     fn new() -> Self {
         Self {
-            rules: Vec::new(),
+            rules: Arc::new(Vec::new()),
             last_modified: None,
         }
     }
@@ -37,7 +37,7 @@ impl BlacklistCache {
         match config.load_blacklist() {
             Ok(new_rules) => {
                 let old_count = self.rules.len();
-                self.rules = new_rules;
+                self.rules = Arc::new(new_rules);
                 if let Ok(metadata) = std::fs::metadata(&config.blacklist_file)
                     && let Ok(mtime) = metadata.modified()
                 {
@@ -61,18 +61,26 @@ impl BlacklistCache {
         }
     }
 }
-pub async fn load_blacklist_with_reload(state: &AppState) -> Vec<String> {
+pub async fn load_blacklist_with_reload(state: &AppState) -> Arc<Vec<String>> {
     if !state.settings.blacklist.enabled {
-        return Vec::new();
+        return Arc::new(Vec::new());
     }
-    let mut cache = state
+    let cache_cell = state
         .blacklist_cache
         .get_or_init(|| async { Arc::new(RwLock::new(BlacklistCache::new())) })
-        .await
-        .write()
         .await;
+
+    let (cached_rules, last_modified) = {
+        let cache = cache_cell.read().await;
+        (Arc::clone(&cache.rules), cache.last_modified)
+    };
+    if !BlacklistCache::is_file_modified(&state.settings.blacklist.blacklist_file, last_modified) {
+        return cached_rules;
+    }
+
+    let mut cache = cache_cell.write().await;
     cache.load_or_reload(&state.settings.blacklist).await;
-    cache.rules.clone()
+    Arc::clone(&cache.rules)
 }
 pub fn is_ip_blacklisted(ip: &str, blacklist: &[String]) -> bool {
     for rule in blacklist.iter() {
@@ -88,7 +96,7 @@ pub async fn check_blacklist(state: &AppState, client_ip: Option<String>) -> Pro
     }
     if let Some(client_ip) = client_ip {
         let blacklist = load_blacklist_with_reload(state).await;
-        if is_ip_blacklisted(&client_ip, &blacklist) {
+        if is_ip_blacklisted(&client_ip, blacklist.as_ref()) {
             warn!("Blocked request from blacklisted IP: {}", client_ip);
             return Err(ProxyError::AccessDenied(client_ip));
         }

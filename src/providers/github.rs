@@ -57,18 +57,43 @@ pub async fn github_proxy(
         }
     }
 }
-fn detect_github_domain(path: &str) -> &'static str {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GithubDomain {
+    GithubCom,
+    Codeload,
+    RawUserContent,
+}
+
+impl GithubDomain {
+    const fn as_str(self) -> &'static str {
+        match self {
+            GithubDomain::GithubCom => "github.com",
+            GithubDomain::Codeload => "codeload.github.com",
+            GithubDomain::RawUserContent => "raw.githubusercontent.com",
+        }
+    }
+
+    fn authority(self) -> Authority {
+        match self {
+            GithubDomain::GithubCom => Authority::from_static("github.com"),
+            GithubDomain::Codeload => Authority::from_static("codeload.github.com"),
+            GithubDomain::RawUserContent => Authority::from_static("raw.githubusercontent.com"),
+        }
+    }
+}
+
+fn detect_github_domain(path: &str) -> GithubDomain {
     if path.contains("/releases/download/") {
-        return "github.com";
+        return GithubDomain::GithubCom;
     }
     if path.contains("/zipball/")
         || path.contains("/tarball/")
         || path.contains("/tar.gz/")
         || path.contains("/zip/")
     {
-        return "codeload.github.com";
+        return GithubDomain::Codeload;
     }
-    "raw.githubusercontent.com"
+    GithubDomain::RawUserContent
 }
 pub fn resolve_github_target(
     _state: &AppState,
@@ -81,36 +106,45 @@ pub fn resolve_github_target(
             "Path cannot be empty".to_string(),
         ));
     }
-    let parts: Vec<&str> = path.splitn(4, '/').collect();
-    if parts.len() < 2 {
+    let (owner, remainder) = path.split_once('/').ok_or_else(|| {
+        ProxyError::InvalidTarget("Path must contain at least owner/repo".to_string())
+    })?;
+    if owner.is_empty() {
         return Err(ProxyError::InvalidTarget(
-            "Path must contain at least owner/repo".to_string(),
+            "Repository owner cannot be empty".to_string(),
         ));
     }
-    let owner = parts[0];
-    let repo = parts[1];
+    let (repo, _rest) = remainder
+        .split_once('/')
+        .map(|(repo, rest)| (repo, Some(rest)))
+        .unwrap_or((remainder, None));
+    if repo.is_empty() {
+        return Err(ProxyError::InvalidTarget(
+            "Repository name cannot be empty".to_string(),
+        ));
+    }
     let domain = detect_github_domain(path);
-    let target_path = format!("/{}", path);
-    let path_with_query = if let Some(q) = query {
-        format!("{}?{}", target_path, q)
-    } else {
-        target_path
-    };
-    let authority = match domain {
-        "github.com" => Authority::from_static("github.com"),
-        "codeload.github.com" => Authority::from_static("codeload.github.com"),
-        "raw.githubusercontent.com" => Authority::from_static("raw.githubusercontent.com"),
-        _ => Authority::from_static("raw.githubusercontent.com"),
-    };
+    let query_str = query.as_deref();
+    let mut path_with_query =
+        String::with_capacity(1 + path.len() + query_str.map(|q| 1 + q.len()).unwrap_or(0));
+    path_with_query.push('/');
+    path_with_query.push_str(path);
+    if let Some(q) = query_str {
+        path_with_query.push('?');
+        path_with_query.push_str(q);
+    }
     let path_and_query = PathAndQuery::from_str(&path_with_query)
         .map_err(|e| ProxyError::InvalidTarget(format!("Invalid path: {}", e)))?;
     info!(
         "GitHub target resolution - owner: {}, repo: {}, domain: {}, path: {}",
-        owner, repo, domain, path_with_query
+        owner,
+        repo,
+        domain.as_str(),
+        path_and_query
     );
     Uri::builder()
         .scheme("https")
-        .authority(authority)
+        .authority(domain.authority())
         .path_and_query(path_and_query)
         .build()
         .map_err(|e| ProxyError::InvalidTarget(format!("Failed to build URI: {}", e)))
@@ -199,7 +233,7 @@ mod tests {
     fn test_detect_github_domain_releases() {
         assert_eq!(
             detect_github_domain("owner/repo/releases/download/v1.0/file.tar.gz"),
-            "github.com"
+            GithubDomain::GithubCom
         );
     }
 
@@ -207,19 +241,19 @@ mod tests {
     fn test_detect_github_domain_archive() {
         assert_eq!(
             detect_github_domain("owner/repo/zipball/main"),
-            "codeload.github.com"
+            GithubDomain::Codeload
         );
         assert_eq!(
             detect_github_domain("owner/repo/tarball/main"),
-            "codeload.github.com"
+            GithubDomain::Codeload
         );
         assert_eq!(
             detect_github_domain("owner/repo/tar.gz/main"),
-            "codeload.github.com"
+            GithubDomain::Codeload
         );
         assert_eq!(
             detect_github_domain("owner/repo/zip/main"),
-            "codeload.github.com"
+            GithubDomain::Codeload
         );
     }
 
@@ -227,7 +261,7 @@ mod tests {
     fn test_detect_github_domain_default() {
         assert_eq!(
             detect_github_domain("owner/repo/file.txt"),
-            "raw.githubusercontent.com"
+            GithubDomain::RawUserContent
         );
     }
 
