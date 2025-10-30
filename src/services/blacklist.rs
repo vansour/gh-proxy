@@ -79,7 +79,9 @@ pub async fn load_blacklist_with_reload(state: &AppState) -> Arc<Vec<String>> {
     }
 
     let mut cache = cache_cell.write().await;
-    cache.load_or_reload(&state.settings.blacklist).await;
+    if BlacklistCache::is_file_modified(&state.settings.blacklist.blacklist_file, cache.last_modified) {
+        cache.load_or_reload(&state.settings.blacklist).await;
+    }
     Arc::clone(&cache.rules)
 }
 pub fn is_ip_blacklisted(ip: &str, blacklist: &[String]) -> bool {
