@@ -976,12 +976,10 @@ async fn collect_body_with_limit(
             );
             return Err(ProxyError::SizeExceeded(size_mb, size_limit_mb));
         }
-        if chunk_len > 0 {
-            if expected_length.is_none() {
-                let remaining_capacity = data.capacity().saturating_sub(data.len());
-                if remaining_capacity < chunk_len {
-                    data.reserve(chunk_len - remaining_capacity);
-                }
+        if expected_length.is_none() {
+            let remaining_capacity = data.capacity().saturating_sub(data.len());
+            if remaining_capacity < chunk_len {
+                data.reserve(chunk_len - remaining_capacity);
             }
         }
         data.extend_from_slice(&chunk);
