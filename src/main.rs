@@ -645,7 +645,7 @@ pub async fn proxy_request(
                 .uri(current_uri.clone())
                 .body(redirect_body)
                 .map_err(ProxyError::HttpBuilder)?;
-            *req.headers_mut() = (**sanitized_headers).clone();
+            *req.headers_mut() = sanitized_headers.as_ref().clone();
             apply_github_headers(req.headers_mut(), &current_uri, state.auth_header.as_ref());
             continue;
         }
