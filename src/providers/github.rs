@@ -6,7 +6,7 @@ use axum::{
 };
 use hyper::header;
 use hyper::http::uri::{Authority, PathAndQuery};
-use std::str::FromStr;
+use std::{borrow::Cow, str::FromStr};
 use tracing::{error, info, instrument, warn};
 #[instrument(skip_all, fields(path = %path))]
 pub async fn github_proxy(
@@ -200,29 +200,45 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
     if url.contains("api.github.com") {
         return false;
     }
-    let github_domain_check = url.contains("github.com")
-        || url.contains("githubusercontent.com")
-        || (url.contains("github")
-            && (url.contains(".com") || url.contains(".io") || url.contains(".org")));
-    if !github_domain_check {
+
+    let normalized = if url.starts_with("http://") || url.starts_with("https://") {
+        Cow::Borrowed(url)
+    } else {
+        Cow::Owned(format!("https://{}", url))
+    };
+
+    let parsed = match Uri::from_str(normalized.as_ref()) {
+        Ok(uri) => uri,
+        Err(_) => return false,
+    };
+
+    let host = parsed
+        .authority()
+        .map(|authority| authority.host())
+        .unwrap_or("");
+
+    if host.is_empty() {
         return false;
     }
-    let after_domain = if let Some(pos) = url.find("github.com") {
-        url.split_at(pos + "github.com".len()).1
-    } else if let Some(pos) = url.find("githubusercontent.com") {
-        url.split_at(pos + "githubusercontent.com".len()).1
-    } else if let Some(slash_pos) = url.find("://") {
-        if let Some(next_slash) = url[slash_pos + 3..].find('/') {
-            &url[slash_pos + 3 + next_slash..]
-        } else {
-            ""
-        }
-    } else {
+
+    let is_github_domain = host.contains("github.com")
+        || host.contains("githubusercontent.com")
+        || (host.contains("github")
+            && (host.ends_with(".com") || host.ends_with(".io") || host.ends_with(".org")));
+
+    if !is_github_domain {
         return false;
-    };
-    let after_domain = after_domain.trim_start_matches('/').trim_end_matches('/');
-    let parts: Vec<&str> = after_domain.split('/').collect();
-    parts.len() == 2
+    }
+
+    let segments: Vec<_> = parsed
+        .path_and_query()
+        .map(|path_and_query| path_and_query.path())
+        .unwrap_or("/")
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    segments.len() == 2
 }
 
 #[cfg(test)]

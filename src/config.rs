@@ -1,5 +1,6 @@
+use http::header::HeaderValue;
 use serde::Deserialize;
-use std::{fs, path::Path};
+use std::{fmt, fs, path::Path};
 use thiserror::Error;
 const DEFAULT_CONFIG_PATH: &str = "/app/config/config.toml";
 #[derive(Debug, Error)]
@@ -256,6 +257,25 @@ impl AuthConfig {
     pub fn has_token(&self) -> bool {
         !self.token.trim().is_empty()
     }
+
+    pub fn authorization_header(
+        &self,
+    ) -> Result<Option<HeaderValue>, http::header::InvalidHeaderValue> {
+        if !self.has_token() {
+            return Ok(None);
+        }
+
+        let token = self.token.trim();
+        if token.is_empty() {
+            return Ok(None);
+        }
+
+        let mut value = String::with_capacity(token.len() + 6);
+        value.push_str("token ");
+        value.push_str(token);
+
+        HeaderValue::from_str(&value).map(Some)
+    }
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -264,6 +284,101 @@ pub struct BlacklistConfig {
     #[serde(rename = "blacklistFile")]
     pub blacklist_file: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlacklistRule {
+    Exact(u32),
+    Cidr { network: u32, mask: u32 },
+    Range { start: u32, end: u32 },
+    Wildcard { segments: [Option<u8>; 4] },
+}
+
+impl BlacklistRule {
+    pub fn from_str(rule: &str) -> Result<Self, BlacklistRuleParseError> {
+        let trimmed = rule.trim();
+        if trimmed.is_empty() {
+            return Err(BlacklistRuleParseError);
+        }
+        if let Some((network, prefix)) = trimmed.split_once('/') {
+            let prefix_len: u32 = prefix.parse().map_err(|_| BlacklistRuleParseError)?;
+            if prefix_len > 32 {
+                return Err(BlacklistRuleParseError);
+            }
+            let network_num = BlacklistConfig::ip_to_u32(network).ok_or(BlacklistRuleParseError)?;
+            let mask = if prefix_len == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix_len)
+            };
+            return Ok(BlacklistRule::Cidr {
+                network: network_num & mask,
+                mask,
+            });
+        }
+        if let Some((start, end)) = trimmed.split_once('-') {
+            let start_num =
+                BlacklistConfig::ip_to_u32(start.trim()).ok_or(BlacklistRuleParseError)?;
+            let end_num = BlacklistConfig::ip_to_u32(end.trim()).ok_or(BlacklistRuleParseError)?;
+            if start_num > end_num {
+                return Err(BlacklistRuleParseError);
+            }
+            return Ok(BlacklistRule::Range {
+                start: start_num,
+                end: end_num,
+            });
+        }
+        if trimmed.contains('*') {
+            let mut segments = [None; 4];
+            let mut parts = trimmed.split('.');
+            for segment in segments.iter_mut() {
+                match parts.next() {
+                    Some("*") => {
+                        *segment = None;
+                    }
+                    Some(value) => {
+                        let octet: u8 = value.parse().map_err(|_| BlacklistRuleParseError)?;
+                        *segment = Some(octet);
+                    }
+                    None => return Err(BlacklistRuleParseError),
+                }
+            }
+            if parts.next().is_some() {
+                return Err(BlacklistRuleParseError);
+            }
+            return Ok(BlacklistRule::Wildcard { segments });
+        }
+        let ip_num = BlacklistConfig::ip_to_u32(trimmed).ok_or(BlacklistRuleParseError)?;
+        Ok(BlacklistRule::Exact(ip_num))
+    }
+
+    pub fn matches(&self, ip_num: u32, octets: &[u8; 4]) -> bool {
+        match self {
+            BlacklistRule::Exact(expected) => ip_num == *expected,
+            BlacklistRule::Cidr { network, mask } => (ip_num & mask) == (*network & mask),
+            BlacklistRule::Range { start, end } => ip_num >= *start && ip_num <= *end,
+            BlacklistRule::Wildcard { segments } => {
+                segments
+                    .iter()
+                    .zip(octets.iter())
+                    .all(|(segment, octet)| match segment {
+                        Some(expected) => expected == octet,
+                        None => true,
+                    })
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BlacklistRuleParseError;
+
+impl fmt::Display for BlacklistRuleParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid blacklist rule")
+    }
+}
+
+impl std::error::Error for BlacklistRuleParseError {}
 #[derive(Debug, Deserialize)]
 struct BlacklistFile {
     rules: Vec<String>,
@@ -277,19 +392,19 @@ impl Default for BlacklistConfig {
     }
 }
 impl BlacklistConfig {
-    pub fn load_blacklist(&self) -> Result<Vec<String>, std::io::Error> {
+    pub fn load_blacklist(&self) -> Result<Vec<BlacklistRule>, std::io::Error> {
         if !self.enabled {
             return Ok(Vec::new());
         }
         match fs::read_to_string(&self.blacklist_file) {
             Ok(content) => {
-                if let Ok(blacklist) = serde_json::from_str::<BlacklistFile>(&content) {
-                    Ok(blacklist.rules)
-                } else {
-                    let list: Vec<String> =
-                        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
-                    Ok(list)
-                }
+                let parsed_strings =
+                    if let Ok(blacklist) = serde_json::from_str::<BlacklistFile>(&content) {
+                        blacklist.rules
+                    } else {
+                        serde_json::from_str::<Vec<String>>(&content).unwrap_or_else(|_| Vec::new())
+                    };
+                Ok(Self::parse_rules(parsed_strings))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e),
@@ -303,97 +418,38 @@ impl BlacklistConfig {
             Ok(rules) => rules,
             Err(_) => return false,
         };
-        for rule in rules.iter() {
-            if Self::ip_matches_rule(ip, rule) {
-                return true;
-            }
-        }
-        false
-    }
-    pub fn ip_matches_rule(ip: &str, rule: &str) -> bool {
-        if ip == rule {
-            return true;
-        }
-        if rule.contains('/') {
-            return Self::ip_in_cidr(ip, rule);
-        }
-        if rule.contains('-') {
-            return Self::ip_in_range(ip, rule);
-        }
-        if rule.contains('*') {
-            return Self::ip_matches_wildcard(ip, rule);
-        }
-        false
-    }
-    fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
-        let parts: Vec<&str> = cidr.split('/').collect();
-        if parts.len() != 2 {
-            return false;
-        }
-        let network = parts[0];
-        let prefix_len: u32 = match parts[1].parse() {
-            Ok(len) => len,
-            Err(_) => return false,
-        };
         let ip_num = match Self::ip_to_u32(ip) {
             Some(num) => num,
             None => return false,
         };
-        let network_num = match Self::ip_to_u32(network) {
-            Some(num) => num,
-            None => return false,
-        };
-        let mask = if prefix_len == 0 {
-            0
-        } else {
-            u32::MAX << (32 - prefix_len)
-        };
-        (ip_num & mask) == (network_num & mask)
+        let octets = ip_num.to_be_bytes();
+        rules.iter().any(|rule| rule.matches(ip_num, &octets))
     }
-    fn ip_in_range(ip: &str, range: &str) -> bool {
-        let parts: Vec<&str> = range.split('-').collect();
-        if parts.len() != 2 {
-            return false;
-        }
-        let start = match Self::ip_to_u32(parts[0].trim()) {
-            Some(num) => num,
-            None => return false,
-        };
-        let end = match Self::ip_to_u32(parts[1].trim()) {
-            Some(num) => num,
-            None => return false,
-        };
-        let ip_num = match Self::ip_to_u32(ip) {
-            Some(num) => num,
-            None => return false,
-        };
-        ip_num >= start && ip_num <= end
-    }
-    fn ip_matches_wildcard(ip: &str, pattern: &str) -> bool {
-        let ip_parts: Vec<&str> = ip.split('.').collect();
-        let pattern_parts: Vec<&str> = pattern.split('.').collect();
-        if ip_parts.len() != 4 || pattern_parts.len() != 4 {
-            return false;
-        }
-        for i in 0..4 {
-            if pattern_parts[i] != "*" && ip_parts[i] != pattern_parts[i] {
-                return false;
+
+    fn parse_rules(raw_rules: Vec<String>) -> Vec<BlacklistRule> {
+        let mut parsed = Vec::with_capacity(raw_rules.len());
+        for rule in raw_rules {
+            match BlacklistRule::from_str(&rule) {
+                Ok(parsed_rule) => parsed.push(parsed_rule),
+                Err(_) => tracing::warn!("Ignoring invalid blacklist rule: {}", rule),
             }
         }
-        true
+        parsed
     }
-    fn ip_to_u32(ip: &str) -> Option<u32> {
-        let parts: Vec<&str> = ip.split('.').collect();
-        if parts.len() != 4 {
-            return None;
-        }
+
+    pub(crate) fn ip_to_u32(ip: &str) -> Option<u32> {
+        let mut parts = ip.split('.');
         let mut result: u32 = 0;
-        for part in parts {
+        for _ in 0..4 {
+            let part = parts.next()?;
             let octet: u32 = part.parse().ok()?;
             if octet > 255 {
                 return None;
             }
             result = (result << 8) | octet;
+        }
+        if parts.next().is_some() {
+            return None;
         }
         Some(result)
     }
@@ -484,6 +540,34 @@ mod tests {
     }
 
     #[test]
+    fn test_auth_config_authorization_header() {
+        let config_with_token = AuthConfig {
+            token: "  secret123  ".to_string(),
+        };
+
+        let header = config_with_token
+            .authorization_header()
+            .expect("valid header")
+            .expect("header should exist");
+        assert_eq!(header, HeaderValue::from_static("token secret123"));
+
+        let config_without_token = AuthConfig {
+            token: "   ".to_string(),
+        };
+        assert!(
+            config_without_token
+                .authorization_header()
+                .expect("no error for empty token")
+                .is_none()
+        );
+
+        let config_invalid = AuthConfig {
+            token: "contains\nnewline".to_string(),
+        };
+        assert!(config_invalid.authorization_header().is_err());
+    }
+
+    #[test]
     fn test_shell_config_is_editor_enabled() {
         let config_enabled = ShellConfig { editor: true };
         assert!(config_enabled.is_editor_enabled());
@@ -524,59 +608,45 @@ mod tests {
 
     #[test]
     fn test_blacklist_config_ip_matches_rule_exact() {
-        assert!(BlacklistConfig::ip_matches_rule(
-            "192.168.1.1",
-            "192.168.1.1"
-        ));
-        assert!(!BlacklistConfig::ip_matches_rule(
-            "192.168.1.2",
-            "192.168.1.1"
-        ));
+        let rule = BlacklistRule::from_str("192.168.1.1").unwrap();
+        let ip = BlacklistConfig::ip_to_u32("192.168.1.1").unwrap();
+        assert!(rule.matches(ip, &ip.to_be_bytes()));
+
+        let other_ip = BlacklistConfig::ip_to_u32("192.168.1.2").unwrap();
+        assert!(!rule.matches(other_ip, &other_ip.to_be_bytes()));
     }
 
     #[test]
     fn test_blacklist_config_ip_in_cidr() {
-        assert!(BlacklistConfig::ip_in_cidr("192.168.1.1", "192.168.1.0/24"));
-        assert!(BlacklistConfig::ip_in_cidr(
-            "192.168.1.255",
-            "192.168.1.0/24"
-        ));
-        assert!(!BlacklistConfig::ip_in_cidr(
-            "192.168.2.1",
-            "192.168.1.0/24"
-        ));
+        let rule = BlacklistRule::from_str("192.168.1.0/24").unwrap();
+        for ip in ["192.168.1.1", "192.168.1.255"] {
+            let value = BlacklistConfig::ip_to_u32(ip).unwrap();
+            assert!(rule.matches(value, &value.to_be_bytes()));
+        }
+        let outside = BlacklistConfig::ip_to_u32("192.168.2.1").unwrap();
+        assert!(!rule.matches(outside, &outside.to_be_bytes()));
     }
 
     #[test]
     fn test_blacklist_config_ip_in_range() {
-        assert!(BlacklistConfig::ip_in_range(
-            "192.168.1.1",
-            "192.168.1.0 - 192.168.1.255"
-        ));
-        assert!(BlacklistConfig::ip_in_range(
-            "192.168.1.100",
-            "192.168.1.0 - 192.168.1.255"
-        ));
-        assert!(!BlacklistConfig::ip_in_range(
-            "192.168.2.1",
-            "192.168.1.0 - 192.168.1.255"
-        ));
+        let rule = BlacklistRule::from_str("192.168.1.0 - 192.168.1.255").unwrap();
+        for ip in ["192.168.1.1", "192.168.1.100"] {
+            let value = BlacklistConfig::ip_to_u32(ip).unwrap();
+            assert!(rule.matches(value, &value.to_be_bytes()));
+        }
+        let outside = BlacklistConfig::ip_to_u32("192.168.2.1").unwrap();
+        assert!(!rule.matches(outside, &outside.to_be_bytes()));
     }
 
     #[test]
     fn test_blacklist_config_ip_matches_wildcard() {
-        assert!(BlacklistConfig::ip_matches_wildcard(
-            "192.168.1.1",
-            "192.168.1.*"
-        ));
-        assert!(BlacklistConfig::ip_matches_wildcard(
-            "192.168.1.255",
-            "192.168.1.*"
-        ));
-        assert!(!BlacklistConfig::ip_matches_wildcard(
-            "192.168.2.1",
-            "192.168.1.*"
-        ));
+        let rule = BlacklistRule::from_str("192.168.1.*").unwrap();
+        for ip in ["192.168.1.1", "192.168.1.255"] {
+            let value = BlacklistConfig::ip_to_u32(ip).unwrap();
+            assert!(rule.matches(value, &value.to_be_bytes()));
+        }
+        let outside = BlacklistConfig::ip_to_u32("192.168.2.1").unwrap();
+        assert!(!rule.matches(outside, &outside.to_be_bytes()));
     }
 
     #[test]
