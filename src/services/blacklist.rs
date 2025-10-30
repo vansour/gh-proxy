@@ -124,7 +124,8 @@ impl BlacklistState {
     }
 
     pub async fn current_rules(&self) -> Arc<Vec<BlacklistRule>> {
-        Arc::clone(&self.rules.read().await)
+        let guard = self.rules.read().await;
+        Arc::clone(&*guard)
     }
 }
 
