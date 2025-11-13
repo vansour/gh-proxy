@@ -1,6 +1,6 @@
 services:
   gh-proxy:
-    image: ghcr.io/vansour/gh-proxy:dev
+    image: ghcr.io/vansour/gh-proxy:latest
     container_name: gh-proxy
     build:
       context: .
