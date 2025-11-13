@@ -1,11 +1,11 @@
-FROM rust:alpine AS builder
+FROM ghcr.io/vansour/rust:alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache musl-dev
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --target x86_64-unknown-linux-musl && \
     strip target/x86_64-unknown-linux-musl/release/gh-proxy
-FROM alpine:latest
+FROM ghcr.io/vansour/alpine:latest
 RUN apk add --no-cache ca-certificates tzdata curl
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
