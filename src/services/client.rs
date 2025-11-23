@@ -38,6 +38,9 @@ mod tests {
             host: "0.0.0.0".to_string(),
             port: 9000,
             size_limit: 200,
+            request_timeout_secs: 60,
+            max_concurrent_requests: 10,
+            permit_acquire_timeout_secs: 5,
         };
         let _client = build_client(&config);
         // Just verify it builds without panicking

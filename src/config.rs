@@ -192,6 +192,12 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(rename = "sizeLimit")]
     pub size_limit: u64,
+    #[serde(rename = "requestTimeoutSecs")]
+    pub request_timeout_secs: u64,
+    #[serde(rename = "maxConcurrentRequests")]
+    pub max_concurrent_requests: u32,
+    #[serde(rename = "permitAcquireTimeoutSecs")]
+    pub permit_acquire_timeout_secs: u64,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -199,6 +205,9 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             size_limit: 125,
+            request_timeout_secs: 60,
+            max_concurrent_requests: 50,
+            permit_acquire_timeout_secs: 10,
         }
     }
 }
@@ -220,6 +229,21 @@ impl ServerConfig {
         if self.size_limit == 0 {
             return Err(ConfigError::Validation(
                 "server.sizeLimit must be at least 1 MB".to_string(),
+            ));
+        }
+        if self.request_timeout_secs == 0 {
+            return Err(ConfigError::Validation(
+                "server.requestTimeoutSecs must be at least 1 second".to_string(),
+            ));
+        }
+        if self.max_concurrent_requests == 0 {
+            return Err(ConfigError::Validation(
+                "server.maxConcurrentRequests must be at least 1".to_string(),
+            ));
+        }
+        if self.permit_acquire_timeout_secs == 0 {
+            return Err(ConfigError::Validation(
+                "server.permitAcquireTimeoutSecs must be at least 1".to_string(),
             ));
         }
         Ok(())
@@ -531,6 +555,9 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
         assert_eq!(config.size_limit, 125);
+        assert_eq!(config.request_timeout_secs, 60);
+        assert_eq!(config.max_concurrent_requests, 50);
+        assert_eq!(config.permit_acquire_timeout_secs, 10);
     }
 
     #[test]
