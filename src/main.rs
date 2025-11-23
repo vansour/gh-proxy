@@ -3,7 +3,7 @@ use axum::{
     body::Body,
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, Method, Response, StatusCode, Uri},
-    routing::{any, get},
+    routing::{any, get, head, post, put},
 };
 use bytes::Bytes;
 use config::{GitHubConfig, Settings};
@@ -40,6 +40,7 @@ pub struct AppState {
     pub shutdown_manager: services::shutdown::ShutdownManager,
     pub uptime_tracker: Arc<services::shutdown::UptimeTracker>,
     pub auth_header: Option<HeaderValue>,
+    pub docker_proxy: Option<Arc<providers::registry::DockerProxy>>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -198,6 +199,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_manager,
         uptime_tracker,
         auth_header,
+        docker_proxy: Some(Arc::new(providers::registry::DockerProxy::new(
+            &settings.registry.default,
+        ))),
     };
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -208,10 +212,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(handlers::files::index))
         .route("/healthz", get(handlers::health::health_liveness))
         .route("/style.css", get(handlers::files::serve_static_file))
+        .route("/docker", get(handlers::files::serve_docker_index))
         .route("/script.js", get(handlers::files::serve_static_file))
         .route("/favicon.ico", get(handlers::files::serve_favicon))
         .route("/api/config", get(api::get_config))
         .route("/github/{*path}", any(providers::github::github_proxy))
+        // Docker Registry V2 compatibility endpoints
+        .route("/v2/", get(providers::registry::handle_v2_check))
+        .route("/v2/{*rest}", get(providers::registry::v2_get))
+        .route("/v2/{*rest}", head(providers::registry::v2_head))
+        .route("/v2/{*rest}", post(providers::registry::v2_post))
+        .route("/v2/{*rest}", put(providers::registry::v2_put))
+        // Debug / registry utilities
+        .route(
+            "/debug/blob-info",
+            get(providers::registry::debug_blob_info),
+        )
+        .route("/registry/healthz", get(providers::registry::healthz))
         .fallback(fallback_proxy)
         .with_state(app_state.clone())
         .layer(cors);
@@ -332,7 +349,33 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
             converted.push_str(q);
         }
         debug!("Fallback target with query: {}", converted);
-        return converted.parse().map_err(|e| format!("Invalid URL: {}", e));
+        // Try to parse; if parsing fails due to characters such as '$' or
+        // parentheses that appear in some example filenames, percent-encode
+        // those characters in the path portion and try parsing again.
+        match converted.parse() {
+            Ok(uri) => return Ok(uri),
+            Err(e) => {
+                debug!("Initial parse failed: {} - attempting path-encoding fallback", e);
+                // find the first slash after the scheme://authority
+                if let Some(slash_idx) = converted.find("://").and_then(|i| converted[i + 3..].find('/').map(|j| i + 3 + j)) {
+                    let (pre, rest) = converted.split_at(slash_idx);
+                    let (path_part, query_part) = match rest.split_once('?') {
+                        Some((p, q)) => (p, Some(q)),
+                        None => (rest, None),
+                    };
+                    let encoded_path = crate::utils::url::encode_problematic_path_chars(path_part);
+                    let mut rebuilt = String::new();
+                    rebuilt.push_str(pre);
+                    rebuilt.push_str(&encoded_path);
+                    if let Some(q) = query_part {
+                        rebuilt.push('?');
+                        rebuilt.push_str(q);
+                    }
+                    return rebuilt.parse().map_err(|e2| format!("Invalid URL: {} / {}", e, e2));
+                }
+                return Err(format!("Invalid URL: {}", e));
+            }
+        }
     }
     if is_github_domain_path(&normalized) {
         let mut full_url = String::with_capacity("https://".len() + normalized.len());
@@ -344,9 +387,31 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
             converted.push_str(q);
         }
         debug!("Fallback GitHub domain target with query: {}", converted);
-        return converted
-            .parse()
-            .map_err(|e| format!("Invalid GitHub URL: {}", e));
+        match converted.parse() {
+            Ok(uri) => return Ok(uri),
+            Err(e) => {
+                debug!("Initial parse failed: {} - attempting path-encoding fallback", e);
+                if let Some(slash_idx) = converted.find("://").and_then(|i| converted[i + 3..].find('/').map(|j| i + 3 + j)) {
+                    let (pre, rest) = converted.split_at(slash_idx);
+                    let (path_part, query_part) = match rest.split_once('?') {
+                        Some((p, q)) => (p, Some(q)),
+                        None => (rest, None),
+                    };
+                    let encoded_path = crate::utils::url::encode_problematic_path_chars(path_part);
+                    let mut rebuilt = String::new();
+                    rebuilt.push_str(pre);
+                    rebuilt.push_str(&encoded_path);
+                    if let Some(q) = query_part {
+                        rebuilt.push('?');
+                        rebuilt.push_str(q);
+                    }
+                    return rebuilt
+                        .parse()
+                        .map_err(|e2| format!("Invalid GitHub URL: {} / {}", e, e2));
+                }
+                return Err(format!("Invalid GitHub URL: {}", e));
+            }
+        }
     }
     Err(format!("No valid target found for path: {}", normalized))
 }
