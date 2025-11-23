@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use reqwest::Method;
+use std::time::Duration;
 use serde_json::Value as JsonValue;
 // Arc not required in this module directly
 
@@ -22,9 +23,15 @@ impl DockerProxy {
         }
 
         let client = reqwest::Client::builder()
+            // Don't automatically decompress upstream responses; the proxy handles it
             .no_gzip()
             .no_brotli()
             .no_deflate()
+            // Connection timeouts and overall request timeout help free resources
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(60))
+            // allow more idle connections per host for multiplexing/http2
+            .pool_max_idle_per_host(16)
             .build()
             .unwrap_or_else(|e| {
                 tracing::warn!("Failed to build custom client, using default: {}", e);
@@ -63,13 +70,86 @@ impl DockerProxy {
         url: &str,
         extra_headers: Option<Vec<(&str, &str)>>,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        let mut req = self.client.request(method, url);
+        let mut req = self.client.request(method.clone(), url);
         if let Some(hs) = &extra_headers {
             for (k, v) in hs.iter() {
                 req = req.header(*k, *v);
             }
         }
-        req.send().await
+        // First attempt
+        let res = req.try_clone().expect("request clone").send().await?;
+        // If upstream requires registry authentication, handle Bearer challenge
+        if res.status() == reqwest::StatusCode::UNAUTHORIZED
+            && let Some(www_str) = res.headers().get("www-authenticate").and_then(|h| h.to_str().ok())
+            && www_str.to_lowercase().starts_with("bearer")
+            && let Ok(token) = self.request_bearer_token(www_str).await
+        {
+            // retry original request with Authorization header
+            let mut req2 = self.client.request(method, url);
+            if let Some(hs2) = &extra_headers {
+                for (k, v) in hs2.iter() {
+                    req2 = req2.header(*k, *v);
+                }
+            }
+            req2 = req2.bearer_auth(token);
+            return req2.send().await;
+        }
+        Ok(res)
+    }
+
+    async fn request_bearer_token(&self, www_authenticate_header: &str) -> Result<String, String> {
+        // example header:
+        // Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/debian:pull"
+        fn parse_kv_pairs(s: &str) -> std::collections::HashMap<String, String> {
+            let mut m = std::collections::HashMap::new();
+            for pair in s.split(',') {
+                if let Some((k, v)) = pair.split_once('=') {
+                    let key = k.trim().trim_matches('"').to_ascii_lowercase();
+                    let value = v.trim().trim_matches('"').to_string();
+                    m.insert(key, value);
+                }
+            }
+            m
+        }
+
+        // trim the leading scheme word (eg "Bearer") -> keep remainder of header
+        let trimmed = www_authenticate_header.trim();
+        let rest = match trimmed.find(char::is_whitespace) {
+            Some(i) => &trimmed[i..],
+            None => "",
+        }
+        .trim();
+        let pairs = parse_kv_pairs(rest);
+        let realm = match pairs.get("realm") {
+            Some(r) => r.clone(),
+            None => return Err("WWW-Authenticate header missing realm".to_string()),
+        };
+        let service = pairs.get("service").cloned();
+        let scope = pairs.get("scope").cloned();
+
+        let mut req = self.client.get(&realm);
+        if let Some(svc) = service {
+            req = req.query(&[("service", svc)]);
+        }
+        if let Some(scp) = scope {
+            req = req.query(&[("scope", scp)]);
+        }
+
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("token fetch failed: {}", resp.status()));
+        }
+        let body = resp.text().await.map_err(|e| e.to_string())?;
+        // token response typically contains `{"token":"..."}` or `{"access_token":"..."}`
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(token) = json.get("token").and_then(|v| v.as_str()) {
+                return Ok(token.to_string());
+            }
+            if let Some(token) = json.get("access_token").and_then(|v| v.as_str()) {
+                return Ok(token.to_string());
+            }
+        }
+        Err("token not found in token response".to_string())
     }
 
     pub async fn get_manifest(

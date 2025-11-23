@@ -22,6 +22,7 @@ use std::{
     time::Duration,
 };
 use tokio::signal;
+use tokio::sync::{Semaphore, OwnedSemaphorePermit};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, instrument, warn};
 mod api;
@@ -41,6 +42,7 @@ pub struct AppState {
     pub uptime_tracker: Arc<services::shutdown::UptimeTracker>,
     pub auth_header: Option<HeaderValue>,
     pub docker_proxy: Option<Arc<providers::registry::DockerProxy>>,
+    pub download_semaphore: Arc<Semaphore>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -64,6 +66,8 @@ pub enum ProxyError {
     HttpBuilder(#[from] http::Error),
     #[error("failed to process response: {0}")]
     ProcessingError(String),
+    #[error("too many concurrent requests")]
+    TooManyConcurrentRequests,
 }
 impl ProxyError {
     pub fn to_status_code(&self) -> StatusCode {
@@ -75,6 +79,7 @@ impl ProxyError {
             | ProxyError::GitHubWebPage(_) => StatusCode::BAD_REQUEST,
             ProxyError::SizeExceeded(_, _) => StatusCode::PAYLOAD_TOO_LARGE,
             ProxyError::Http(_) => StatusCode::BAD_GATEWAY,
+            ProxyError::TooManyConcurrentRequests => StatusCode::TOO_MANY_REQUESTS,
             ProxyError::UnsupportedHost(_) => StatusCode::NOT_IMPLEMENTED,
             ProxyError::ProcessingError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ProxyError::HttpBuilder(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -106,6 +111,9 @@ impl ProxyError {
                 "Connection Error\n\nFailed to connect to the target server.\n\nError details: {}\n\nPossible causes:\n- DNS resolution failure\n- Network connectivity issues\n- Firewall blocking outbound connections\n- Target server is down\n",
                 e
             ),
+            ProxyError::TooManyConcurrentRequests => format!(
+                "Too Many Concurrent Requests\n\nThe server is currently handling the maximum number of concurrent downloads. Please retry later."
+            ),
             _ => format!("{}\n\nPlease check the URL and try again.\n", self),
         }
     }
@@ -118,6 +126,41 @@ pub enum ResponsePostProcessor {
 struct RequestLifecycle {
     shutdown: services::shutdown::ShutdownManager,
     completed: bool,
+}
+
+/// RAII guard that owns an optional semaphore permit and a start time.
+/// When dropped it will release the permit (if still present) and update
+/// proxy metrics (active requests gauge and duration histogram).
+struct RequestPermitGuard {
+    permit: Option<OwnedSemaphorePermit>,
+    start: Option<std::time::Instant>,
+}
+impl RequestPermitGuard {
+    fn new(permit: OwnedSemaphorePermit, start: std::time::Instant) -> Self {
+        Self {
+            permit: Some(permit),
+            start: Some(start),
+        }
+    }
+    fn take_permit(&mut self) -> Option<OwnedSemaphorePermit> {
+        self.permit.take()
+    }
+    fn take_start_time(&mut self) -> Option<std::time::Instant> {
+        self.start.take()
+    }
+}
+impl Drop for RequestPermitGuard {
+    fn drop(&mut self) {
+        // If the permit is still present here, it means we did not move it
+        // into a streaming response, so we are responsible for updating
+        // metrics now that the request is finishing.
+        if self.permit.take().is_some() {
+            infra::metrics::HTTP_ACTIVE_REQUESTS.dec();
+            if let Some(start) = self.start.take() {
+                infra::metrics::HTTP_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
+            }
+        }
+    }
 }
 impl RequestLifecycle {
     fn new(state: &AppState) -> Self {
@@ -191,6 +234,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_manager = services::shutdown::ShutdownManager::new();
     let uptime_tracker = Arc::new(services::shutdown::UptimeTracker::new());
     let settings = Arc::new(settings);
+    let download_semaphore = Arc::new(Semaphore::new(settings.server.max_concurrent_requests as usize));
+
     let app_state = AppState {
         settings: Arc::clone(&settings),
         github_config: Arc::new(github_config),
@@ -202,6 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         docker_proxy: Some(Arc::new(providers::registry::DockerProxy::new(
             &settings.registry.default,
         ))),
+        download_semaphore,
     };
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -216,6 +262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/script.js", get(handlers::files::serve_static_file))
         .route("/favicon.ico", get(handlers::files::serve_favicon))
         .route("/api/config", get(api::get_config))
+        .route("/metrics", get(infra::metrics::metrics_handler))
         .route("/github/{*path}", any(providers::github::github_proxy))
         // Docker Registry V2 compatibility endpoints
         .route("/v2/", get(providers::registry::handle_v2_check))
@@ -620,15 +667,41 @@ pub async fn proxy_request(
         "Initial request method: {}, URI: {}",
         initial_method, current_uri
     );
+    // Acquire a permit to control global concurrent upstream requests
+    let permit_acquire_timeout = Duration::from_secs(state.settings.server.permit_acquire_timeout_secs);
+    let permit = match tokio::time::timeout(
+        permit_acquire_timeout,
+        state.download_semaphore.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            error!("Failed to acquire semaphore permit: {}", e);
+            let err = ProxyError::ProcessingError("failed to acquire semaphore permit".to_string());
+            lifecycle.fail(Some(&err));
+            return Err(err);
+        }
+        Err(_) => {
+            warn!("Timeout waiting for download permit after {:?}", permit_acquire_timeout);
+            let err = ProxyError::TooManyConcurrentRequests;
+            lifecycle.fail(Some(&err));
+            return Err(err);
+        }
+    };
+    // we now hold a permit - count active requests and create an RAII guard
+    infra::metrics::HTTP_ACTIVE_REQUESTS.inc();
+    let mut permit_guard = RequestPermitGuard::new(permit, start);
     let response = loop {
         info!(
             "Sending request to: {} (method: {})",
             current_uri, initial_method
         );
 
-        let response = match state.client.request(req).await {
-            Ok(resp) => resp,
-            Err(e) => {
+        let req_timeout = Duration::from_secs(state.settings.server.request_timeout_secs);
+        let response = match tokio::time::timeout(req_timeout, state.client.request(req)).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => {
                 // Try one inline retry after encoding the path portion of the
                 // current URI (handles redirects that include unencoded chars
                 // like $ or parentheses). If the encoded parse succeeds, make
@@ -658,15 +731,21 @@ pub async fn proxy_request(
                             state.auth_header.as_ref(),
                         );
                         // second attempt
-                        match state.client.request(req).await {
-                            Ok(resp2) => resp2,
-                            Err(e2) => {
-                                error!("Retry failed to connect to {}: {}", current_uri, e2);
-                                let error = ProxyError::Http(Box::new(e2));
-                                lifecycle.fail(Some(&error));
-                                return Err(error);
+                            match tokio::time::timeout(req_timeout, state.client.request(req)).await {
+                                Ok(Ok(resp2)) => resp2,
+                                Ok(Err(e2)) => {
+                                    error!("Retry failed to connect to {}: {}", current_uri, e2);
+                                    let error = ProxyError::Http(Box::new(e2));
+                                    lifecycle.fail(Some(&error));
+                                    return Err(error);
+                                }
+                                Err(_) => {
+                                    error!("Retry to {} timed out after {:?}", current_uri, req_timeout);
+                                    let error = ProxyError::ProcessingError(format!("request to {} timed out", current_uri));
+                                    lifecycle.fail(Some(&error));
+                                    return Err(error);
+                                }
                             }
-                        }
                     } else {
                         error!("Failed to connect to {}: {}", current_uri, e);
                         let error = ProxyError::Http(Box::new(e));
@@ -680,8 +759,16 @@ pub async fn proxy_request(
                     return Err(error);
                 }
             }
+            Err(_) => {
+                error!("Request to {} timed out after {:?}", current_uri, req_timeout);
+                let error = ProxyError::ProcessingError(format!("request to {} timed out", current_uri));
+                lifecycle.fail(Some(&error));
+                return Err(error);
+            }
         };
         let status = response.status();
+        // increment global request counter
+        infra::metrics::HTTP_REQUESTS_TOTAL.inc();
         if status.is_redirection() && status != StatusCode::NOT_MODIFIED {
             redirect_count += 1;
             if redirect_count > max_redirects {
@@ -864,6 +951,7 @@ pub async fn proxy_request(
             .insert(hyper::header::CONTENT_LENGTH, content_length_value);
         let response = Response::from_parts(parts, Body::from(processed_bytes));
         lifecycle.success();
+        // metrics + permit will be handled by the RAII guard on function exit
         return Ok(response);
     }
     sanitize_response_headers(&mut parts.headers, false, false, false);
@@ -873,6 +961,8 @@ pub async fn proxy_request(
         lifecycle,
         size_limit_bytes,
         size_limit_mb,
+        permit_guard.take_start_time(),
+        permit_guard.take_permit(),
     );
     let response = Response::from_parts(parts, Body::from_stream(streaming_body));
     Ok(response)
@@ -1011,6 +1101,11 @@ struct ProxyBodyStream {
     size_limit_bytes: u64,
     size_limit_mb: u64,
     total_bytes: u64,
+    // When present, this permit is held for the duration of the streaming
+    // response; dropping it releases the semaphore.
+    permit: Option<OwnedSemaphorePermit>,
+    // start time for measuring streaming duration
+    start_time: Option<std::time::Instant>,
 }
 impl ProxyBodyStream {
     fn new(
@@ -1018,6 +1113,8 @@ impl ProxyBodyStream {
         lifecycle: RequestLifecycle,
         size_limit_bytes: u64,
         size_limit_mb: u64,
+        start_time: Option<std::time::Instant>,
+        permit: Option<OwnedSemaphorePermit>,
     ) -> Self {
         Self {
             inner,
@@ -1025,6 +1122,8 @@ impl ProxyBodyStream {
             size_limit_bytes,
             size_limit_mb,
             total_bytes: 0,
+            permit,
+            start_time,
         }
     }
 }
@@ -1057,11 +1156,25 @@ impl Stream for ProxyBodyStream {
                 if let Some(mut lifecycle) = this.lifecycle.take() {
                     lifecycle.fail(Some(&error));
                 }
+                // release permit and record metrics for failed stream
+                if this.permit.take().is_some() {
+                    infra::metrics::HTTP_ACTIVE_REQUESTS.dec();
+                }
+                if let Some(start) = this.start_time.take() {
+                    infra::metrics::HTTP_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
+                }
                 Poll::Ready(Some(Err(error)))
             }
             Poll::Ready(None) => {
                 if let Some(mut lifecycle) = this.lifecycle.take() {
                     lifecycle.success();
+                }
+                // release permit and record metrics for completed stream
+                if this.permit.take().is_some() {
+                    infra::metrics::HTTP_ACTIVE_REQUESTS.dec();
+                }
+                if let Some(start) = this.start_time.take() {
+                    infra::metrics::HTTP_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
                 }
                 Poll::Ready(None)
             }
