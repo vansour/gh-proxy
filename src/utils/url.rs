@@ -50,6 +50,36 @@ pub fn encode_problematic_path_chars(input: &str) -> String {
     out
 }
 
+/// Given a full URL string like `https://example.com/a/b c`, percent-encode the
+/// path portion (everything starting at the first '/' after authority). This is a
+/// conservative helper used when a request fails and we want to retry with the
+/// path portion encoded. Returns owned string; if no path portion exists the
+/// original string is returned.
+pub fn encode_path_of_full_url(url: &str) -> String {
+    if let Some(idx) = url.find("://") {
+        // find next slash after scheme://
+        if let Some(slash_idx) = url[idx + 3..].find('/').map(|i| idx + 3 + i) {
+            let (pre, rest) = url.split_at(slash_idx);
+            // rest begins with '/'
+            let (path, query_part) = match rest.split_once('?') {
+                Some((p, q)) => (p, Some(q)),
+                None => (rest, None),
+            };
+            let encoded_path = encode_problematic_path_chars(path);
+            let mut rebuilt = String::with_capacity(url.len());
+            rebuilt.push_str(pre);
+            rebuilt.push_str(&encoded_path);
+            if let Some(q) = query_part {
+                rebuilt.push('?');
+                rebuilt.push_str(q);
+            }
+            return rebuilt;
+        }
+    }
+    // no authority/path found - return original
+    url.to_string()
+}
+
 /// Rewrites URLs in `content` that match the given `regex` by prepending `proxy_url` to them.
 ///
 /// # Parameters
@@ -187,5 +217,13 @@ mod tests {
         let content = "This is plain text without links";
         let result = add_proxy_to_html_urls(content, "proxy.example.com");
         assert_eq!(result.as_ref(), content);
+    }
+
+    #[test]
+    fn test_encode_path_of_full_url_encodes_special_chars() {
+        let input = "https://github.com/owner/repo/releases/download/25.9.1/Miniforge3-$(uname)-file (x).sh";
+        let encoded = encode_path_of_full_url(input);
+        assert!(encoded.contains("%24%28uname%29"));
+        assert!(encoded.contains("%20%28x%29"));
     }
 }
