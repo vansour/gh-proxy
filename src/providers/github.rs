@@ -191,10 +191,12 @@ pub fn is_github_web_only_path(url: &str) -> bool {
         return false;
     }
     // Support common variant: /releases/<tag-or-latest>/download/<file>
-    if let Some(idx) = url.find("/releases/") {
-        if url[idx + "/releases/".len()..].contains("/download/") {
-            return false;
-        }
+    if url
+        .find("/releases/")
+        .map(|idx| url[idx + "/releases/".len()..].contains("/download/"))
+        .unwrap_or(false)
+    {
+        return false;
     }
     let web_only_patterns = [
         "/pkgs/",
@@ -408,7 +410,8 @@ mod tests {
         // percent-encode those characters before attempting to parse as a
         // PathAndQuery; the test ensures encoding makes the string parseable.
         use crate::utils::url::encode_problematic_path_chars;
-        let raw = "/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname%20-m).sh";
+        let raw =
+            "/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname%20-m).sh";
         let (path_part, query_part) = match raw.split_once('?') {
             Some((p, q)) => (p, Some(q)),
             None => (raw, None),

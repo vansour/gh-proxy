@@ -355,9 +355,15 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
         match converted.parse() {
             Ok(uri) => return Ok(uri),
             Err(e) => {
-                debug!("Initial parse failed: {} - attempting path-encoding fallback", e);
+                debug!(
+                    "Initial parse failed: {} - attempting path-encoding fallback",
+                    e
+                );
                 // find the first slash after the scheme://authority
-                if let Some(slash_idx) = converted.find("://").and_then(|i| converted[i + 3..].find('/').map(|j| i + 3 + j)) {
+                if let Some(slash_idx) = converted
+                    .find("://")
+                    .and_then(|i| converted[i + 3..].find('/').map(|j| i + 3 + j))
+                {
                     let (pre, rest) = converted.split_at(slash_idx);
                     let (path_part, query_part) = match rest.split_once('?') {
                         Some((p, q)) => (p, Some(q)),
@@ -371,7 +377,9 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
                         rebuilt.push('?');
                         rebuilt.push_str(q);
                     }
-                    return rebuilt.parse().map_err(|e2| format!("Invalid URL: {} / {}", e, e2));
+                    return rebuilt
+                        .parse()
+                        .map_err(|e2| format!("Invalid URL: {} / {}", e, e2));
                 }
                 return Err(format!("Invalid URL: {}", e));
             }
@@ -390,8 +398,14 @@ fn resolve_fallback_target(uri: &Uri) -> Result<Uri, String> {
         match converted.parse() {
             Ok(uri) => return Ok(uri),
             Err(e) => {
-                debug!("Initial parse failed: {} - attempting path-encoding fallback", e);
-                if let Some(slash_idx) = converted.find("://").and_then(|i| converted[i + 3..].find('/').map(|j| i + 3 + j)) {
+                debug!(
+                    "Initial parse failed: {} - attempting path-encoding fallback",
+                    e
+                );
+                if let Some(slash_idx) = converted
+                    .find("://")
+                    .and_then(|i| converted[i + 3..].find('/').map(|j| i + 3 + j))
+                {
                     let (pre, rest) = converted.split_at(slash_idx);
                     let (path_part, query_part) = match rest.split_once('?') {
                         Some((p, q)) => (p, Some(q)),
@@ -611,13 +625,60 @@ pub async fn proxy_request(
             "Sending request to: {} (method: {})",
             current_uri, initial_method
         );
+
         let response = match state.client.request(req).await {
             Ok(resp) => resp,
             Err(e) => {
-                error!("Failed to connect to {}: {}", current_uri, e);
-                let error = ProxyError::Http(Box::new(e));
-                lifecycle.fail(Some(&error));
-                return Err(error);
+                // Try one inline retry after encoding the path portion of the
+                // current URI (handles redirects that include unencoded chars
+                // like $ or parentheses). If the encoded parse succeeds, make
+                // a second attempt immediately.
+                let uri_str = current_uri.to_string();
+                let encoded = crate::utils::url::encode_path_of_full_url(&uri_str);
+                if encoded != uri_str {
+                    if let Ok(enc_uri) = encoded.parse::<Uri>() {
+                        warn!(
+                            "Initial request failed: {} - retrying with encoded path: {}",
+                            e, enc_uri
+                        );
+                        current_uri = enc_uri;
+                        let retry_body = body_bytes
+                            .as_ref()
+                            .map(|bytes| Body::from(bytes.clone()))
+                            .unwrap_or_else(Body::empty);
+                        req = Request::builder()
+                            .method(initial_method.clone())
+                            .uri(current_uri.clone())
+                            .body(retry_body)
+                            .map_err(ProxyError::HttpBuilder)?;
+                        *req.headers_mut() = sanitized_headers.as_ref().clone();
+                        apply_github_headers(
+                            req.headers_mut(),
+                            &current_uri,
+                            state.auth_header.as_ref(),
+                        );
+                        // second attempt
+                        match state.client.request(req).await {
+                            Ok(resp2) => resp2,
+                            Err(e2) => {
+                                error!("Retry failed to connect to {}: {}", current_uri, e2);
+                                let error = ProxyError::Http(Box::new(e2));
+                                lifecycle.fail(Some(&error));
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        error!("Failed to connect to {}: {}", current_uri, e);
+                        let error = ProxyError::Http(Box::new(e));
+                        lifecycle.fail(Some(&error));
+                        return Err(error);
+                    }
+                } else {
+                    error!("Failed to connect to {}: {}", current_uri, e);
+                    let error = ProxyError::Http(Box::new(e));
+                    lifecycle.fail(Some(&error));
+                    return Err(error);
+                }
             }
         };
         let status = response.status();
@@ -1047,7 +1108,12 @@ async fn collect_body_with_limit(
     Ok(data)
 }
 fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Vec<u8>, String> {
-    match String::from_utf8(body_bytes) {
+    // Try to parse as UTF-8 text first. If conversion fails, make a
+    // conservative heuristic check to see if the content looks like binary
+    // (e.g. contains NUL or many non-printable bytes). For binary-like
+    // content we skip text processing entirely to avoid corrupting the
+    // payload.
+    match String::from_utf8(body_bytes.clone()) {
         Ok(text) => {
             info!(
                 "Processing shell script ({} bytes), adding proxy prefix: {}",
@@ -1062,6 +1128,28 @@ fn process_shell_script_bytes(body_bytes: Vec<u8>, proxy_url: &str) -> Result<Ve
         Err(err) => {
             let utf8_error = err.utf8_error();
             let bytes = err.into_bytes();
+
+            // Detect obvious binary payloads to avoid lossy conversion
+            // that could mangle executable data. Heuristic:
+            // - If data contains a NUL byte -> binary
+            // - Else compute printable ratio; if < 0.85 treat as binary
+            let contains_nul = bytes.contains(&0);
+            let printable_or_whitespace = bytes
+                .iter()
+                .filter(|&&b| b == b'\n' || b == b'\r' || b == b'\t' || (0x20..=0x7e).contains(&b))
+                .count();
+            let ratio = printable_or_whitespace as f64 / bytes.len().max(1) as f64;
+
+            if contains_nul || ratio < 0.85 {
+                warn!(
+                    "Shell script contains non-UTF-8 data ({}). Payload looks binary (printable ratio {:.2}), skipping text processing to avoid corruption",
+                    utf8_error, ratio
+                );
+                // Return original bytes unchanged
+                return Ok(bytes);
+            }
+
+            // Otherwise fall back to lossy conversion and try URL injection
             let lossy_text = String::from_utf8_lossy(&bytes);
             warn!(
                 "Shell script contains non-UTF-8 data ({}), applying lossy conversion",
@@ -1298,6 +1386,30 @@ mod tests {
         // This test verifies the lifecycle tracking mechanism works
         // We can't fully test this without the full AppState, but we verify the struct exists
         let _: std::marker::PhantomData<RequestLifecycle> = std::marker::PhantomData;
+    }
+
+    #[test]
+    fn test_process_shell_script_bytes_binary_skips_processing() {
+        // Create bytes which contain NUL and some non-printables -> binary
+        let data = Vec::from(b"\x00\x01\x02\x03\x04binary\x00\xFF".as_ref());
+        let result =
+            process_shell_script_bytes(data.clone(), "http://proxy").expect("should succeed");
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_process_shell_script_bytes_lossy_conversion_applies() {
+        // Contains an invalid byte but mostly printable; expect lossy conversion & URL rewrite
+        let data =
+            Vec::from(b"echo https://github.com/owner/repo/blob/main/file.txt \xFF".as_ref());
+        let output = process_shell_script_bytes(data, "http://proxy").expect("should succeed");
+        let out_str = String::from_utf8_lossy(&output);
+        // convert_github_blob_to_raw and add_proxy_to_github_urls should make the github url go through the proxy
+        assert!(
+            out_str.contains(
+                "http://proxy/https://raw.githubusercontent.com/owner/repo/main/file.txt"
+            ) || out_str.contains("http://proxy/https://github.com/owner/repo")
+        );
     }
 
     #[test]
