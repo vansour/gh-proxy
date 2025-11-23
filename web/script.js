@@ -184,6 +184,15 @@
                     return { link: `wget "${directLink}"`, isUrl: false };
                 case 'curl':
                     return { link: `curl -O "${directLink}"`, isUrl: false };
+                case 'docker': {
+                    // Only accept Docker image references (e.g. alpine, nginx:latest, registry.example.com/namespace/image:tag, image@sha256:...)
+                    const spec = userInput.trim();
+                    if (!isValidDockerRef(spec)) {
+                        return { error: '请输入有效的 Docker 镜像标识（例如：alpine 或 registry.example.com/namespace/image:tag）' };
+                    }
+                    // Generate a `docker pull` that points at the proxy host; users can replace with their registry as needed
+                    return { link: `docker pull ${window.location.origin}/${spec}`, isUrl: false };
+                }
                 case 'direct':
                 default:
                     return { link: directLink, isUrl: true };
@@ -215,10 +224,13 @@
             DOM.error.textContent = result.error;
             DOM.error.classList.add('text-field__error--visible');
             DOM.outputArea.style.display = 'none';
+            // No docker preview — only show the docker pull command when docker selected
         } else {
             DOM.output.textContent = result.link;
             DOM.outputArea.style.display = 'flex';
             DOM.openButton.disabled = !result.isUrl;
+            // Only show the docker preview button when format == docker
+            // nothing for preview
         }
     }
 
@@ -415,6 +427,22 @@
 
         DOM.copyButton.addEventListener('click', copyToClipboard);
         DOM.openButton.addEventListener('click', openInNewTab);
+        // no docker preview action
+
+        // ----------------------
+        // Docker image validation
+        // ----------------------
+        function isValidDockerRef(s) {
+            if (!s || s.trim().length === 0) return false;
+            if (/\s/.test(s)) return false;
+            // Reject http URLs
+            if (/^https?:\/\//i.test(s)) return false;
+            // digest form: name@sha256:<64 hex>
+            const digestRe = /^(?:[^\/@]+(?:\/[\w.-]+)*)@sha256:[0-9a-fA-F]{64}$/;
+            // basic name/tag form: [registry/][namespace/]name[:tag]
+            const tagRe = /^(?:[a-zA-Z0-9.-]+(?::[0-9]+)?\/)??(?:[\w.-]+\/?)*[\w.-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?$/;
+            return digestRe.test(s) || tagRe.test(s);
+        }
     }
 
     // ============ 初始化 ============

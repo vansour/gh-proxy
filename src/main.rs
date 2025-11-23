@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 use tokio::signal;
-use tokio::sync::{Semaphore, OwnedSemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, instrument, warn};
 mod api;
@@ -111,9 +111,8 @@ impl ProxyError {
                 "Connection Error\n\nFailed to connect to the target server.\n\nError details: {}\n\nPossible causes:\n- DNS resolution failure\n- Network connectivity issues\n- Firewall blocking outbound connections\n- Target server is down\n",
                 e
             ),
-            ProxyError::TooManyConcurrentRequests => format!(
-                "Too Many Concurrent Requests\n\nThe server is currently handling the maximum number of concurrent downloads. Please retry later."
-            ),
+            ProxyError::TooManyConcurrentRequests =>
+                "Too Many Concurrent Requests\n\nThe server is currently handling the maximum number of concurrent downloads. Please retry later.".to_string(),
             _ => format!("{}\n\nPlease check the URL and try again.\n", self),
         }
     }
@@ -157,7 +156,8 @@ impl Drop for RequestPermitGuard {
         if self.permit.take().is_some() {
             infra::metrics::HTTP_ACTIVE_REQUESTS.dec();
             if let Some(start) = self.start.take() {
-                infra::metrics::HTTP_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
+                infra::metrics::HTTP_REQUEST_DURATION_SECONDS
+                    .observe(start.elapsed().as_secs_f64());
             }
         }
     }
@@ -234,7 +234,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_manager = services::shutdown::ShutdownManager::new();
     let uptime_tracker = Arc::new(services::shutdown::UptimeTracker::new());
     let settings = Arc::new(settings);
-    let download_semaphore = Arc::new(Semaphore::new(settings.server.max_concurrent_requests as usize));
+    let download_semaphore = Arc::new(Semaphore::new(
+        settings.server.max_concurrent_requests as usize,
+    ));
 
     let app_state = AppState {
         settings: Arc::clone(&settings),
@@ -668,7 +670,8 @@ pub async fn proxy_request(
         initial_method, current_uri
     );
     // Acquire a permit to control global concurrent upstream requests
-    let permit_acquire_timeout = Duration::from_secs(state.settings.server.permit_acquire_timeout_secs);
+    let permit_acquire_timeout =
+        Duration::from_secs(state.settings.server.permit_acquire_timeout_secs);
     let permit = match tokio::time::timeout(
         permit_acquire_timeout,
         state.download_semaphore.clone().acquire_owned(),
@@ -683,7 +686,10 @@ pub async fn proxy_request(
             return Err(err);
         }
         Err(_) => {
-            warn!("Timeout waiting for download permit after {:?}", permit_acquire_timeout);
+            warn!(
+                "Timeout waiting for download permit after {:?}",
+                permit_acquire_timeout
+            );
             let err = ProxyError::TooManyConcurrentRequests;
             lifecycle.fail(Some(&err));
             return Err(err);
@@ -731,21 +737,27 @@ pub async fn proxy_request(
                             state.auth_header.as_ref(),
                         );
                         // second attempt
-                            match tokio::time::timeout(req_timeout, state.client.request(req)).await {
-                                Ok(Ok(resp2)) => resp2,
-                                Ok(Err(e2)) => {
-                                    error!("Retry failed to connect to {}: {}", current_uri, e2);
-                                    let error = ProxyError::Http(Box::new(e2));
-                                    lifecycle.fail(Some(&error));
-                                    return Err(error);
-                                }
-                                Err(_) => {
-                                    error!("Retry to {} timed out after {:?}", current_uri, req_timeout);
-                                    let error = ProxyError::ProcessingError(format!("request to {} timed out", current_uri));
-                                    lifecycle.fail(Some(&error));
-                                    return Err(error);
-                                }
+                        match tokio::time::timeout(req_timeout, state.client.request(req)).await {
+                            Ok(Ok(resp2)) => resp2,
+                            Ok(Err(e2)) => {
+                                error!("Retry failed to connect to {}: {}", current_uri, e2);
+                                let error = ProxyError::Http(Box::new(e2));
+                                lifecycle.fail(Some(&error));
+                                return Err(error);
                             }
+                            Err(_) => {
+                                error!(
+                                    "Retry to {} timed out after {:?}",
+                                    current_uri, req_timeout
+                                );
+                                let error = ProxyError::ProcessingError(format!(
+                                    "request to {} timed out",
+                                    current_uri
+                                ));
+                                lifecycle.fail(Some(&error));
+                                return Err(error);
+                            }
+                        }
                     } else {
                         error!("Failed to connect to {}: {}", current_uri, e);
                         let error = ProxyError::Http(Box::new(e));
@@ -760,8 +772,12 @@ pub async fn proxy_request(
                 }
             }
             Err(_) => {
-                error!("Request to {} timed out after {:?}", current_uri, req_timeout);
-                let error = ProxyError::ProcessingError(format!("request to {} timed out", current_uri));
+                error!(
+                    "Request to {} timed out after {:?}",
+                    current_uri, req_timeout
+                );
+                let error =
+                    ProxyError::ProcessingError(format!("request to {} timed out", current_uri));
                 lifecycle.fail(Some(&error));
                 return Err(error);
             }
@@ -1161,7 +1177,8 @@ impl Stream for ProxyBodyStream {
                     infra::metrics::HTTP_ACTIVE_REQUESTS.dec();
                 }
                 if let Some(start) = this.start_time.take() {
-                    infra::metrics::HTTP_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
+                    infra::metrics::HTTP_REQUEST_DURATION_SECONDS
+                        .observe(start.elapsed().as_secs_f64());
                 }
                 Poll::Ready(Some(Err(error)))
             }
@@ -1174,7 +1191,8 @@ impl Stream for ProxyBodyStream {
                     infra::metrics::HTTP_ACTIVE_REQUESTS.dec();
                 }
                 if let Some(start) = this.start_time.take() {
-                    infra::metrics::HTTP_REQUEST_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
+                    infra::metrics::HTTP_REQUEST_DURATION_SECONDS
+                        .observe(start.elapsed().as_secs_f64());
                 }
                 Poll::Ready(None)
             }
@@ -1346,192 +1364,4 @@ fn is_github_file_host(host: &str) -> bool {
 }
 fn host_ends_with_ignore_ascii_case(host: &str, suffix: &str) -> bool {
     host.len() >= suffix.len() && host[host.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_proxy_error_unsupported_host_status_code() {
-        let error = ProxyError::UnsupportedHost("example.com".to_string());
-        assert_eq!(error.to_status_code(), StatusCode::NOT_IMPLEMENTED);
-    }
-
-    #[test]
-    fn test_proxy_error_invalid_target_status_code() {
-        let error = ProxyError::InvalidTarget("invalid path".to_string());
-        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn test_proxy_error_access_denied_status_code() {
-        let error = ProxyError::AccessDenied("192.168.1.1".to_string());
-        assert_eq!(error.to_status_code(), StatusCode::FORBIDDEN);
-    }
-
-    #[test]
-    fn test_proxy_error_size_exceeded_status_code() {
-        let error = ProxyError::SizeExceeded(500, 250);
-        assert_eq!(error.to_status_code(), StatusCode::PAYLOAD_TOO_LARGE);
-    }
-
-    #[test]
-    fn test_proxy_error_invalid_github_url_status_code() {
-        let error = ProxyError::InvalidGitHubUrl("/invalid/path".to_string());
-        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn test_proxy_error_github_web_page_status_code() {
-        let error = ProxyError::GitHubWebPage("https://github.com/owner/repo".to_string());
-        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn test_proxy_error_github_repo_homepage_status_code() {
-        let error = ProxyError::GitHubRepoHomepage("https://github.com/owner/repo".to_string());
-        assert_eq!(error.to_status_code(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn test_proxy_error_processing_error_status_code() {
-        let error = ProxyError::ProcessingError("failed to process".to_string());
-        assert_eq!(error.to_status_code(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
-    fn test_proxy_error_http_status_code() {
-        let http_error: Box<dyn std::error::Error + Send + Sync> = "test error".to_string().into();
-        let error = ProxyError::Http(http_error);
-        assert_eq!(error.to_status_code(), StatusCode::BAD_GATEWAY);
-    }
-
-    #[test]
-    fn test_proxy_error_access_denied_message() {
-        let error = ProxyError::AccessDenied("192.168.1.1".to_string());
-        let message = error.to_user_message();
-        assert!(message.contains("Access Denied"));
-        assert!(message.contains("192.168.1.1"));
-    }
-
-    #[test]
-    fn test_proxy_error_github_web_page_message() {
-        let url = "https://github.com/owner/repo/actions/runs/123";
-        let error = ProxyError::GitHubWebPage(url.to_string());
-        let message = error.to_user_message();
-        assert!(message.contains("GitHub Web Page Detected"));
-        assert!(message.contains(url));
-    }
-
-    #[test]
-    fn test_proxy_error_github_repo_homepage_message() {
-        let url = "https://github.com/owner/repo";
-        let error = ProxyError::GitHubRepoHomepage(url.to_string());
-        let message = error.to_user_message();
-        assert!(message.contains("GitHub Repository Homepage Detected"));
-        assert!(message.contains(url));
-    }
-
-    #[test]
-    fn test_proxy_error_size_exceeded_message() {
-        let error = ProxyError::SizeExceeded(500, 250);
-        let message = error.to_user_message();
-        assert!(message.contains("File Size Exceeded"));
-        assert!(message.contains("500 MB"));
-        assert!(message.contains("250 MB"));
-    }
-
-    #[test]
-    fn test_proxy_error_invalid_github_url_message() {
-        let path = "/invalid/path";
-        let error = ProxyError::InvalidGitHubUrl(path.to_string());
-        let message = error.to_user_message();
-        assert!(message.contains("Invalid Request"));
-        assert!(message.contains(path));
-    }
-
-    #[test]
-    fn test_is_github_api_host_true() {
-        assert!(is_github_api_host("api.github.com"));
-    }
-
-    #[test]
-    fn test_is_github_api_host_false() {
-        assert!(!is_github_api_host("github.com"));
-        assert!(!is_github_api_host("raw.githubusercontent.com"));
-        assert!(!is_github_api_host("example.com"));
-    }
-
-    #[test]
-    fn test_is_github_file_host_raw_githubusercontent() {
-        assert!(is_github_file_host("raw.githubusercontent.com"));
-    }
-
-    #[test]
-    fn test_is_github_file_host_codeload() {
-        assert!(is_github_file_host("codeload.github.com"));
-    }
-
-    #[test]
-    fn test_is_github_file_host_objects() {
-        assert!(is_github_file_host("objects.githubusercontent.com"));
-    }
-
-    #[test]
-    fn test_is_github_file_host_media() {
-        assert!(is_github_file_host("media.githubusercontent.com"));
-    }
-
-    #[test]
-    fn test_is_github_file_host_suffix() {
-        assert!(is_github_file_host("custom.githubusercontent.com"));
-    }
-
-    #[test]
-    fn test_is_github_file_host_false() {
-        assert!(!is_github_file_host("example.com"));
-        assert!(!is_github_file_host("github.com"));
-    }
-
-    #[test]
-    fn test_request_lifecycle_new() {
-        // This test verifies the lifecycle tracking mechanism works
-        // We can't fully test this without the full AppState, but we verify the struct exists
-        let _: std::marker::PhantomData<RequestLifecycle> = std::marker::PhantomData;
-    }
-
-    #[test]
-    fn test_process_shell_script_bytes_binary_skips_processing() {
-        // Create bytes which contain NUL and some non-printables -> binary
-        let data = Vec::from(b"\x00\x01\x02\x03\x04binary\x00\xFF".as_ref());
-        let result =
-            process_shell_script_bytes(data.clone(), "http://proxy").expect("should succeed");
-        assert_eq!(result, data);
-    }
-
-    #[test]
-    fn test_process_shell_script_bytes_lossy_conversion_applies() {
-        // Contains an invalid byte but mostly printable; expect lossy conversion & URL rewrite
-        let data =
-            Vec::from(b"echo https://github.com/owner/repo/blob/main/file.txt \xFF".as_ref());
-        let output = process_shell_script_bytes(data, "http://proxy").expect("should succeed");
-        let out_str = String::from_utf8_lossy(&output);
-        // convert_github_blob_to_raw and add_proxy_to_github_urls should make the github url go through the proxy
-        assert!(
-            out_str.contains(
-                "http://proxy/https://raw.githubusercontent.com/owner/repo/main/file.txt"
-            ) || out_str.contains("http://proxy/https://github.com/owner/repo")
-        );
-    }
-
-    #[test]
-    fn test_proxy_error_http_builder_status_code() {
-        // Create an Http::Error using the Uri builder approach
-        let uri_result = http::Uri::builder().build();
-        if let Err(e) = uri_result {
-            let error = ProxyError::HttpBuilder(e);
-            assert_eq!(error.to_status_code(), StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
 }

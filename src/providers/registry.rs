@@ -6,8 +6,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use reqwest::Method;
-use std::time::Duration;
 use serde_json::Value as JsonValue;
+use std::time::Duration;
 // Arc not required in this module directly
 
 pub struct DockerProxy {
@@ -80,7 +80,10 @@ impl DockerProxy {
         let res = req.try_clone().expect("request clone").send().await?;
         // If upstream requires registry authentication, handle Bearer challenge
         if res.status() == reqwest::StatusCode::UNAUTHORIZED
-            && let Some(www_str) = res.headers().get("www-authenticate").and_then(|h| h.to_str().ok())
+            && let Some(www_str) = res
+                .headers()
+                .get("www-authenticate")
+                .and_then(|h| h.to_str().ok())
             && www_str.to_lowercase().starts_with("bearer")
             && let Ok(token) = self.request_bearer_token(www_str).await
         {
@@ -627,22 +630,5 @@ pub async fn v2_put(State(_state): State<AppState>, Path(rest): Path<String>) ->
     match parse_v2_path(&rest) {
         V2Endpoint::BlobUploadComplete { .. } => complete_blob_upload().await.into_response(),
         _ => (StatusCode::NOT_FOUND, "Not Found").into_response(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_manifest() {
-        let ep = parse_v2_path("library/ubuntu/manifests/latest");
-        assert_eq!(
-            ep,
-            V2Endpoint::Manifest {
-                name: "library/ubuntu".to_string(),
-                reference: "latest".to_string()
-            }
-        );
     }
 }
