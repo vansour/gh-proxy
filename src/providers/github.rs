@@ -133,8 +133,28 @@ pub fn resolve_github_target(
         path_with_query.push('?');
         path_with_query.push_str(q);
     }
-    let path_and_query = PathAndQuery::from_str(&path_with_query)
-        .map_err(|e| ProxyError::InvalidTarget(format!("Invalid path: {}", e)))?;
+    // Try parsing the path+query. If parsing fails due to characters that are
+    // valid in many real-world URLs (eg. '$' or parentheses) attempt a second
+    // parsing pass after encoding those problematic characters.
+    let path_and_query = match PathAndQuery::from_str(&path_with_query) {
+        Ok(v) => v,
+        Err(_) => {
+            use crate::utils::url::encode_problematic_path_chars;
+            let (p, q) = match path_with_query.split_once('?') {
+                Some((pp, qq)) => (pp, Some(qq)),
+                None => (path_with_query.as_str(), None),
+            };
+            let encoded_path = encode_problematic_path_chars(p);
+            let mut rebuilt = String::new();
+            rebuilt.push_str(&encoded_path);
+            if let Some(qs) = q {
+                rebuilt.push('?');
+                rebuilt.push_str(qs);
+            }
+            PathAndQuery::from_str(&rebuilt)
+                .map_err(|e| ProxyError::InvalidTarget(format!("Invalid path: {}", e)))?
+        }
+    };
     info!(
         "GitHub target resolution - owner: {}, repo: {}, domain: {}, path: {}",
         owner,
@@ -169,6 +189,12 @@ pub fn is_github_web_only_path(url: &str) -> bool {
     }
     if url.contains("/releases/download/") {
         return false;
+    }
+    // Support common variant: /releases/<tag-or-latest>/download/<file>
+    if let Some(idx) = url.find("/releases/") {
+        if url[idx + "/releases/".len()..].contains("/download/") {
+            return false;
+        }
     }
     let web_only_patterns = [
         "/pkgs/",
@@ -317,6 +343,10 @@ mod tests {
         assert!(!is_github_web_only_path(
             "/releases/download/v1.0/file.tar.gz"
         ));
+        // /releases/latest/download/ should also be treated as a download path
+        assert!(!is_github_web_only_path(
+            "/releases/latest/download/v1.0/file.tar.gz"
+        ));
     }
 
     #[test]
@@ -370,5 +400,27 @@ mod tests {
     #[test]
     fn test_is_github_repo_homepage_non_github() {
         assert!(!is_github_repo_homepage("https://example.com/owner/repo"));
+    }
+
+    #[test]
+    fn test_resolve_github_target_with_shell_like_filename() {
+        // When a path contains shell-like snippets such as $(uname) we will
+        // percent-encode those characters before attempting to parse as a
+        // PathAndQuery; the test ensures encoding makes the string parseable.
+        use crate::utils::url::encode_problematic_path_chars;
+        let raw = "/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname%20-m).sh";
+        let (path_part, query_part) = match raw.split_once('?') {
+            Some((p, q)) => (p, Some(q)),
+            None => (raw, None),
+        };
+        let encoded = encode_problematic_path_chars(path_part);
+        let mut reconstructed = String::new();
+        reconstructed.push_str(&encoded);
+        if let Some(qs) = query_part {
+            reconstructed.push('?');
+            reconstructed.push_str(qs);
+        }
+        let parsed = PathAndQuery::from_str(&reconstructed).expect("encoded path should parse");
+        assert!(parsed.path().contains("Miniforge3-%24%28uname%29"));
     }
 }

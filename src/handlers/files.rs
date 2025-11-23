@@ -99,6 +99,24 @@ pub async fn serve_favicon() -> Response<Body> {
     }
 }
 
+pub async fn serve_docker_index() -> impl axum::response::IntoResponse {
+    let html = match fs::read_to_string("/app/web/docker/index.html") {
+        Ok(s) => s,
+        Err(_) => "<html><body><h1>Docker UI missing</h1></body></html>".to_string(),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .unwrap_or_else(|e| {
+            error!("Failed to build docker index response: {}", e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Internal Server Error"))
+                .unwrap_or_else(|_| Response::new(Body::from("Internal Server Error")))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

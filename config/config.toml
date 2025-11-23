@@ -8,10 +8,14 @@ editor = true
 
 [log]
 logFilePath = "/app/logs/gh-proxy.log"
-level = "info" # debug, info, warn, error
+level = "debug" # debug, info, warn, error
 
 [auth]
 token = ""
+
+[registry]
+default = "registry-1.docker.io"
+#registry-1.docker.io, ghcr.io ...
 
 [blacklist]
 enabled = true

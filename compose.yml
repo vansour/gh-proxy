@@ -4,7 +4,7 @@ services:
     container_name: gh-proxy
     build:
       context: .
-      dockerfile: Dockerfile.alpine
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
     volumes:

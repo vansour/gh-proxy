@@ -22,6 +22,8 @@ pub struct Settings {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
+    pub registry: RegistryConfig,
+    #[serde(default)]
     pub shell: ShellConfig,
     #[serde(default)]
     pub log: LogConfig,
@@ -65,6 +67,22 @@ impl Default for ProxyConfig {
                 "githubusercontent.com".to_string(),
                 "*.githubusercontent.com".to_string(),
             ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RegistryConfig {
+    /// Default upstream registry (e.g. docker.io)
+    #[serde(rename = "default")]
+    pub default: String,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            default: "docker.io".to_string(),
         }
     }
 }

@@ -17,6 +17,7 @@
 - **graceful shutdown**: 优雅关闭，确保请求完成
 - **日志系统**: 完整的日志记录和追踪功能
 - **Docker 支持**: 开箱即用的 Docker 部署
+- **Docker Registry 代理（集成）**: 已合并 Docker Registry v2 的代理功能，可通过 /v2/* 路径访问（例如 /v2/library/ubuntu/manifests/latest）。
 
 ## 📋 系统要求
 
@@ -120,6 +121,8 @@ blacklistFile = "/app/config/blacklist.json"  # 黑名单文件路径
 - 多格式下载选择
 - 实时链接转换
 - 复制转换结果
+
+另外，集成的 Docker 镜像代理 UI 可在 `http://localhost:8080/docker` 访问，用于生成镜像拉取命令 / 交互式体验。
 
 ## 📡 API 端点
 
