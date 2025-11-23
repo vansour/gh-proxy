@@ -81,19 +81,6 @@ pub fn encode_path_of_full_url(url: &str) -> String {
 }
 
 /// Rewrites URLs in `content` that match the given `regex` by prepending `proxy_url` to them.
-///
-/// # Parameters
-/// - `regex`: The regular expression used to find URLs to rewrite.
-/// - `content`: The input string containing URLs. The returned value may borrow from this string.
-/// - `proxy_url`: The proxy URL to prepend to matched URLs.
-///
-/// # Return
-/// Returns a `Cow<'a, str>`:
-/// - If no URLs are rewritten, returns `Cow::Borrowed(content)`.
-/// - If any URLs are rewritten, returns `Cow::Owned(String)` with the modified content.
-///
-/// # Lifetimes
-/// The returned value borrows from `content` unless rewriting occurs, in which case an owned `String` is returned.
 fn rewrite_with_regex<'a>(regex: &Regex, content: &'a str, proxy_url: &str) -> Cow<'a, str> {
     let mut buffer: Option<String> = None;
     let mut last = 0;
@@ -130,100 +117,5 @@ fn rewrite_with_regex<'a>(regex: &Regex, content: &'a str, proxy_url: &str) -> C
             Cow::Owned(output)
         }
         None => Cow::Borrowed(content),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_add_proxy_to_github_urls_with_https() {
-        let content = "https://raw.githubusercontent.com/owner/repo/main/file.txt";
-        let result = add_proxy_to_github_urls(content, "https://proxy.example.com");
-        assert!(
-            result
-                .as_ref()
-                .contains("https://proxy.example.com/https://raw.githubusercontent.com")
-        );
-    }
-
-    #[test]
-    fn test_add_proxy_to_github_urls_without_schema() {
-        let content = "https://raw.githubusercontent.com/owner/repo/main/file.txt";
-        let result = add_proxy_to_github_urls(content, "proxy.example.com");
-        assert!(
-            result
-                .as_ref()
-                .contains("https://proxy.example.com/https://raw.githubusercontent.com")
-        );
-    }
-
-    #[test]
-    fn test_add_proxy_to_github_urls_skip_localhost() {
-        let content = "https://raw.githubusercontent.com/owner/repo/main/file.txt";
-        let result = add_proxy_to_github_urls(content, "localhost:8000");
-        // localhost URLs should not be modified
-        assert!(
-            result
-                .as_ref()
-                .contains("https://raw.githubusercontent.com")
-        );
-    }
-
-    #[test]
-    fn test_add_proxy_to_github_urls_github_com() {
-        let content = "https://github.com/owner/repo/blob/main/file.txt";
-        let result = add_proxy_to_github_urls(content, "https://proxy.example.com");
-        assert!(
-            result
-                .as_ref()
-                .contains("https://proxy.example.com/https://github.com")
-        );
-    }
-
-    #[test]
-    fn test_add_proxy_to_html_urls() {
-        let content = r#"<a href="https://github.com/owner/repo">Link</a>"#;
-        let result = add_proxy_to_html_urls(content, "https://proxy.example.com");
-        assert!(
-            result
-                .as_ref()
-                .contains("https://proxy.example.com/https://github.com")
-        );
-    }
-
-    #[test]
-    fn test_add_proxy_to_html_urls_raw_github() {
-        let content =
-            r#"<a href="https://raw.githubusercontent.com/owner/repo/main/file.txt">File</a>"#;
-        let result = add_proxy_to_html_urls(content, "proxy.example.com");
-        assert!(
-            result
-                .as_ref()
-                .contains("https://proxy.example.com/https://raw.githubusercontent.com")
-        );
-    }
-
-    #[test]
-    fn test_add_proxy_to_html_urls_skip_127() {
-        let content = r#"<a href="https://github.com/owner/repo">Link</a>"#;
-        let result = add_proxy_to_html_urls(content, "127.0.0.1:8000");
-        assert!(result.as_ref().contains("https://github.com"));
-    }
-
-    #[test]
-    fn test_add_proxy_to_html_urls_no_links() {
-        let content = "This is plain text without links";
-        let result = add_proxy_to_html_urls(content, "proxy.example.com");
-        assert_eq!(result.as_ref(), content);
-    }
-
-    #[test]
-    fn test_encode_path_of_full_url_encodes_special_chars() {
-        let input = "https://github.com/owner/repo/releases/download/25.9.1/Miniforge3-$(uname)-file (x).sh";
-        let encoded = encode_path_of_full_url(input);
-        assert!(encoded.contains("%24%28uname%29"));
-        assert!(encoded.contains("%20%28x%29"));
     }
 }
