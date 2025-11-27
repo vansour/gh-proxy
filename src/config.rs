@@ -1,6 +1,6 @@
 use http::header::HeaderValue;
 use serde::Deserialize;
-use std::{fmt, fs, path::Path};
+use std::{fs, path::Path};
 use thiserror::Error;
 const DEFAULT_CONFIG_PATH: &str = "/app/config/config.toml";
 #[derive(Debug, Error)]
@@ -29,8 +29,6 @@ pub struct Settings {
     pub log: LogConfig,
     #[serde(default)]
     pub auth: AuthConfig,
-    #[serde(default)]
-    pub blacklist: BlacklistConfig,
 }
 impl Settings {
     pub fn load() -> Result<Self, ConfigError> {
@@ -317,183 +315,6 @@ impl AuthConfig {
         value.push_str(token);
 
         HeaderValue::from_str(&value).map(Some)
-    }
-}
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct BlacklistConfig {
-    pub enabled: bool,
-    #[serde(rename = "blacklistFile")]
-    pub blacklist_file: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlacklistRule {
-    Exact(u32),
-    Cidr { network: u32, mask: u32 },
-    Range { start: u32, end: u32 },
-    Wildcard { segments: [Option<u8>; 4] },
-}
-
-impl BlacklistRule {
-    pub fn from_str(rule: &str) -> Result<Self, BlacklistRuleParseError> {
-        let trimmed = rule.trim();
-        if trimmed.is_empty() {
-            return Err(BlacklistRuleParseError);
-        }
-        if let Some((network, prefix)) = trimmed.split_once('/') {
-            let prefix_len: u32 = prefix.parse().map_err(|_| BlacklistRuleParseError)?;
-            if prefix_len > 32 {
-                return Err(BlacklistRuleParseError);
-            }
-            let network_num = BlacklistConfig::ip_to_u32(network).ok_or(BlacklistRuleParseError)?;
-            let mask = if prefix_len == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix_len)
-            };
-            return Ok(BlacklistRule::Cidr {
-                network: network_num & mask,
-                mask,
-            });
-        }
-        if let Some((start, end)) = trimmed.split_once('-') {
-            let start_num =
-                BlacklistConfig::ip_to_u32(start.trim()).ok_or(BlacklistRuleParseError)?;
-            let end_num = BlacklistConfig::ip_to_u32(end.trim()).ok_or(BlacklistRuleParseError)?;
-            if start_num > end_num {
-                return Err(BlacklistRuleParseError);
-            }
-            return Ok(BlacklistRule::Range {
-                start: start_num,
-                end: end_num,
-            });
-        }
-        if trimmed.contains('*') {
-            let mut segments = [None; 4];
-            let mut parts = trimmed.split('.');
-            for segment in segments.iter_mut() {
-                match parts.next() {
-                    Some("*") => {
-                        *segment = None;
-                    }
-                    Some(value) => {
-                        let octet: u8 = value.parse().map_err(|_| BlacklistRuleParseError)?;
-                        *segment = Some(octet);
-                    }
-                    None => return Err(BlacklistRuleParseError),
-                }
-            }
-            if parts.next().is_some() {
-                return Err(BlacklistRuleParseError);
-            }
-            return Ok(BlacklistRule::Wildcard { segments });
-        }
-        let ip_num = BlacklistConfig::ip_to_u32(trimmed).ok_or(BlacklistRuleParseError)?;
-        Ok(BlacklistRule::Exact(ip_num))
-    }
-
-    pub fn matches(&self, ip_num: u32, octets: &[u8; 4]) -> bool {
-        match self {
-            BlacklistRule::Exact(expected) => ip_num == *expected,
-            BlacklistRule::Cidr { network, mask } => (ip_num & mask) == (*network & mask),
-            BlacklistRule::Range { start, end } => ip_num >= *start && ip_num <= *end,
-            BlacklistRule::Wildcard { segments } => {
-                segments
-                    .iter()
-                    .zip(octets.iter())
-                    .all(|(segment, octet)| match segment {
-                        Some(expected) => expected == octet,
-                        None => true,
-                    })
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct BlacklistRuleParseError;
-
-impl fmt::Display for BlacklistRuleParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid blacklist rule")
-    }
-}
-
-impl std::error::Error for BlacklistRuleParseError {}
-#[derive(Debug, Deserialize)]
-struct BlacklistFile {
-    rules: Vec<String>,
-}
-impl Default for BlacklistConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            blacklist_file: "/app/config/blacklist.json".to_string(),
-        }
-    }
-}
-impl BlacklistConfig {
-    pub fn load_blacklist(&self) -> Result<Vec<BlacklistRule>, std::io::Error> {
-        if !self.enabled {
-            return Ok(Vec::new());
-        }
-        match fs::read_to_string(&self.blacklist_file) {
-            Ok(content) => {
-                let parsed_strings =
-                    if let Ok(blacklist) = serde_json::from_str::<BlacklistFile>(&content) {
-                        blacklist.rules
-                    } else {
-                        serde_json::from_str::<Vec<String>>(&content).unwrap_or_else(|_| Vec::new())
-                    };
-                Ok(Self::parse_rules(parsed_strings))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
-    }
-    pub fn is_ip_blacklisted(&self, ip: &str) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        let rules = match self.load_blacklist() {
-            Ok(rules) => rules,
-            Err(_) => return false,
-        };
-        let ip_num = match Self::ip_to_u32(ip) {
-            Some(num) => num,
-            None => return false,
-        };
-        let octets = ip_num.to_be_bytes();
-        rules.iter().any(|rule| rule.matches(ip_num, &octets))
-    }
-
-    fn parse_rules(raw_rules: Vec<String>) -> Vec<BlacklistRule> {
-        let mut parsed = Vec::with_capacity(raw_rules.len());
-        for rule in raw_rules {
-            match BlacklistRule::from_str(&rule) {
-                Ok(parsed_rule) => parsed.push(parsed_rule),
-                Err(_) => tracing::warn!("Ignoring invalid blacklist rule: {}", rule),
-            }
-        }
-        parsed
-    }
-
-    pub(crate) fn ip_to_u32(ip: &str) -> Option<u32> {
-        let mut parts = ip.split('.');
-        let mut result: u32 = 0;
-        for _ in 0..4 {
-            let part = parts.next()?;
-            let octet: u32 = part.parse().ok()?;
-            if octet > 255 {
-                return None;
-            }
-            result = (result << 8) | octet;
-        }
-        if parts.next().is_some() {
-            return None;
-        }
-        Some(result)
     }
 }
 pub struct GitHubConfig {

@@ -37,7 +37,6 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     pub github_config: Arc<GitHubConfig>,
     pub client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
-    pub blacklist: services::blacklist::BlacklistState,
     pub shutdown_manager: services::shutdown::ShutdownManager,
     pub uptime_tracker: Arc<services::shutdown::UptimeTracker>,
     pub auth_header: Option<HeaderValue>,
@@ -50,8 +49,6 @@ pub enum ProxyError {
     UnsupportedHost(String),
     #[error("invalid target uri: {0}")]
     InvalidTarget(String),
-    #[error("access denied: {0}")]
-    AccessDenied(String),
     #[error("file size exceeds limit: {0} MB > {1} MB")]
     SizeExceeded(u64, u64),
     #[error("invalid GitHub URL: {0}")]
@@ -72,7 +69,6 @@ pub enum ProxyError {
 impl ProxyError {
     pub fn to_status_code(&self) -> StatusCode {
         match self {
-            ProxyError::AccessDenied(_) => StatusCode::FORBIDDEN,
             ProxyError::InvalidTarget(_)
             | ProxyError::InvalidGitHubUrl(_)
             | ProxyError::GitHubRepoHomepage(_)
@@ -87,10 +83,6 @@ impl ProxyError {
     }
     pub fn to_user_message(&self) -> String {
         match self {
-            ProxyError::AccessDenied(ip) => format!(
-                "Access Denied\n\nYour IP address has been blacklisted: {}\n\nThis IP has been blocked by the proxy administrator.\n\nIf you believe this is an error, please contact the administrator.\n",
-                ip
-            ),
             ProxyError::GitHubWebPage(url) => format!(
                 "GitHub Web Page Detected\n\nThe URL you requested is a GitHub web page, not a downloadable file:\n{}\n\nThis path includes pages like:\n- Package containers (/pkgs/container/)\n- Releases (/releases/)\n- GitHub Actions (/actions/)\n- Repository settings (/settings/)\n- Issues and pull requests\n\nIf you want to download a specific file, please use one of these formats:\n- Raw file URL: https://raw.githubusercontent.com/owner/repo/branch/path/to/file\n- Blob URL (will be auto-converted): https://github.com/owner/repo/blob/branch/path/to/file\n- Release download: https://github.com/owner/repo/releases/download/tag/filename\n",
                 url
@@ -211,15 +203,9 @@ fn error_response(error: ProxyError) -> Response<Body> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::load()?;
-    let blacklist_state =
-        services::blacklist::BlacklistState::initialize(settings.blacklist.clone()).await;
     infra::log::setup_tracing(&settings.log);
     info!("Starting gh-proxy server");
     info!("Log level: {}", settings.log.get_level());
-    info!(
-        "Blacklist enabled: {} (lazy loading)",
-        settings.blacklist.enabled
-    );
     if settings.shell.is_editor_enabled() {
         info!("Shell editor mode enabled");
     }
@@ -242,7 +228,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings: Arc::clone(&settings),
         github_config: Arc::new(github_config),
         client,
-        blacklist: blacklist_state,
         shutdown_manager,
         uptime_tracker,
         auth_header,
@@ -584,10 +569,6 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         "Proxy URL determined: {} (from Cloudflare/upstream)",
         proxy_url
     );
-    let client_ip = services::request::extract_client_ip(&req);
-    if let Err(error) = services::blacklist::check_blacklist(&state, client_ip).await {
-        return error_response(error);
-    }
     let target_uri = match resolve_target_uri_with_validation(
         req.uri(),
         state.github_config.as_ref(),

@@ -16,7 +16,3 @@ token = ""
 [registry]
 default = "registry-1.docker.io"
 #registry-1.docker.io, ghcr.io ...
-
-[blacklist]
-enabled = true
-blacklistFile = "/app/config/blacklist.json"

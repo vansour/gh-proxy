@@ -7,7 +7,6 @@ use tracing::info;
 pub struct ConfigResponse {
     pub server: ServerInfo,
     pub shell: ShellInfo,
-    pub blacklist: BlacklistInfo,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerInfo {
@@ -18,10 +17,6 @@ pub struct ServerInfo {
 pub struct ShellInfo {
     pub editor: bool,
 }
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BlacklistInfo {
-    pub enabled: bool,
-}
 pub async fn get_config(State(state): State<AppState>) -> Result<Json<ConfigResponse>, StatusCode> {
     info!("API: Fetching configuration");
     let config = ConfigResponse {
@@ -30,9 +25,6 @@ pub async fn get_config(State(state): State<AppState>) -> Result<Json<ConfigResp
         },
         shell: ShellInfo {
             editor: state.settings.shell.editor,
-        },
-        blacklist: BlacklistInfo {
-            enabled: state.settings.blacklist.enabled,
         },
     };
     Ok(Json(config))

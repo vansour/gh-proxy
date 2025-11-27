@@ -344,7 +344,6 @@
 
             const updates = {
                 'sizeLimitDisplay': config.server ? `${config.server.sizeLimit} MB` : '无法获取',
-                'blackListStatus': config.blacklist ? (config.blacklist.enabled ? '已开启' : '已关闭') : '无法获取',
                 'shellNestStatus': config.shell ? (config.shell.editor ? '已开启' : '已关闭') : '无法获取',
             };
 
@@ -354,7 +353,7 @@
             });
         } catch (error) {
             console.error('Error fetching config:', error);
-            ['sizeLimitDisplay', 'blackListStatus', 'shellNestStatus'].forEach(id => {
+            ['sizeLimitDisplay', 'shellNestStatus'].forEach(id => {
                 const element = document.getElementById(id);
                 if (element) element.textContent = '无法获取';
             });
