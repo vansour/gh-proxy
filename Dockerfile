@@ -4,7 +4,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release && strip target/release/gh-proxy
 FROM ghcr.io/vansour/debian:trixie-slim
-RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends ca-certificates tzdata && apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends ca-certificates tzdata curl && apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo "Asia/Shanghai" > /etc/timezone
 WORKDIR /app
