@@ -242,8 +242,10 @@
         if (activeButton) {
             const rect = activeButton.getBoundingClientRect();
             const containerRect = DOM.formatToggle.getBoundingClientRect();
+            // translateX must account for horizontal scroll in the segmented control
+            const offsetInside = rect.left - containerRect.left + DOM.formatToggle.scrollLeft;
             DOM.slider.style.width = `${rect.width}px`;
-            DOM.slider.style.transform = `translateX(${rect.left - containerRect.left}px)`;
+            DOM.slider.style.transform = `translateX(${offsetInside}px)`;
         }
     }
 
@@ -256,6 +258,10 @@
         const throttledUpdateSlider = throttle(updateSliderPosition, CONFIG.THROTTLE_DELAY);
         const resizeObserver = new ResizeObserver(throttledUpdateSlider);
         resizeObserver.observe(DOM.formatToggle);
+        // 观察各个按钮的大小变化（例如语言或字体变化导致文字换行）
+        Array.from(DOM.formatToggle.querySelectorAll('button')).forEach((btn) => resizeObserver.observe(btn));
+        // 当用户在小屏幕上水平滚动选项时，也需要移动滑块
+        DOM.formatToggle.addEventListener('scroll', throttledUpdateSlider);
     }
 
     /**
@@ -406,6 +412,10 @@
             DOM.formatToggle.querySelector('.active')?.classList.remove('active');
             button.classList.add('active');
             updateSliderPosition();
+            // 如果控件可横向滚动，确保被点击的选项可见（居中）
+            if (DOM.formatToggle.scrollWidth > DOM.formatToggle.clientWidth) {
+                button.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            }
             if (DOM.input.value.trim()) {
                 handleFormAction();
             }
