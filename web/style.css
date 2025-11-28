@@ -388,7 +388,7 @@ body {
 }
 
 .segmented-control__button {
-    flex-grow: 1; flex-shrink: 1; text-align: center;
+    flex: 1 1 auto; text-align: center; /* allow natural flexing on wide screens */
     padding: 8px 12px; border: none; background-color: transparent;
     color: var(--md-sys-color-on-surface-variant); border-radius: 16px;
     cursor: pointer; font-size: var(--md-sys-typescale-label-large-size);
@@ -410,4 +410,24 @@ body {
     .output-area { padding-right: 80px; }
     .status-cards { grid-template-columns: 1fr 1fr; }
     .app-bar__title { font-size: 22px; }
+    /* On small screens, make the segmented control horizontally scrollable
+       and avoid forcing each option to take equal width. This prevents
+       awkward overflow and gives the user a better touch target. */
+    .segmented-control {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        gap: 8px;
+        padding: 6px;
+    }
+    /* Keep buttons as intrinsic size and allow horizontal scrolling */
+    .segmented-control__button {
+        flex: 0 0 auto;
+        white-space: nowrap;
+        padding: 10px 14px;
+    }
+    /* Improve touch target and hide scrollbar in most browsers reasonably */
+    /* Hide scrollbar on Firefox and IE while keeping smooth scrolling on mobile */
+    .segmented-control { scrollbar-width: none; -ms-overflow-style: none; }
+    .segmented-control::-webkit-scrollbar { display: none; height: 6px; }
+    .segmented-control::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 6px; }
 }
