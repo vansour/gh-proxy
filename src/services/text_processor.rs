@@ -1,8 +1,8 @@
 use aho_corasick::AhoCorasick;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use futures_util::{Stream, ready};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
 /// Patterns to match for GitHub URLs that need proxying
@@ -15,14 +15,19 @@ const PATTERNS: &[&str] = &[
     "http://gist.github.com",
 ];
 
+/// Global Aho-Corasick automaton to avoid rebuilding it for every request.
+static AC_AUTOMATON: OnceLock<AhoCorasick> = OnceLock::new();
+
+fn get_automaton() -> &'static AhoCorasick {
+    AC_AUTOMATON
+        .get_or_init(|| AhoCorasick::new(PATTERNS).expect("Failed to build Aho-Corasick automaton"))
+}
+
 /// A stream wrapper that performs on-the-fly string injection.
-/// It searches for GitHub URLs and prepends the proxy URL to them.
 pub struct TextReplacementStream<S> {
     inner: S,
-    /// Internal buffer to handle matches crossing chunk boundaries
-    buffer: Vec<u8>,
-    /// The Aho-Corasick automaton for multi-pattern search
-    ac: AhoCorasick,
+    /// Efficient buffer that supports O(1) splitting from the front
+    buffer: BytesMut,
     /// The proxy prefix to inject (e.g., "https://ghproxy.com/")
     proxy_prefix: Arc<str>,
     /// Maximum length of any pattern (for buffer safety margin)
@@ -33,14 +38,11 @@ pub struct TextReplacementStream<S> {
 
 impl<S> TextReplacementStream<S> {
     pub fn new(inner: S, proxy_url: &str) -> Self {
-        // Construct the automaton. Match longest to prefer https over http if they overlap (though they share start).
-        // Aho-Corasick matches are typically leftmost-longest by default configuration or distinct.
-        let ac = AhoCorasick::new(PATTERNS).expect("Failed to build Aho-Corasick automaton");
+        // Ensure automaton is initialized
+        let _ = get_automaton();
+
         let max_len = PATTERNS.iter().map(|p| p.len()).max().unwrap_or(0);
 
-        // Normalize proxy URL to ensure it ends with '/' if needed, or matches the expected injection format.
-        // The original logic was `proxy_url + "/" + url`.
-        // e.g. "https://ghproxy.com" -> "https://ghproxy.com/"
         let mut prefix = proxy_url.to_string();
         if !prefix.ends_with('/') {
             prefix.push('/');
@@ -48,8 +50,7 @@ impl<S> TextReplacementStream<S> {
 
         Self {
             inner,
-            buffer: Vec::with_capacity(8 * 1024), // Start with 8KB
-            ac,
+            buffer: BytesMut::with_capacity(8 * 1024), // Start with 8KB
             proxy_prefix: Arc::from(prefix),
             max_pattern_len: max_len,
             inner_done: false,
@@ -65,92 +66,75 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            // 1. If we have data in the buffer, try to process and yield it
+            // 1. Process data in buffer
             if !self.buffer.is_empty() {
-                // Determine the "safe" zone to scan.
-                // We must leave `max_pattern_len - 1` bytes at the end UNLESS stream is done,
-                // because a partial match might start there and continue in the next chunk.
                 let search_limit = if self.inner_done {
                     self.buffer.len()
                 } else {
                     self.buffer.len().saturating_sub(self.max_pattern_len - 1)
                 };
 
-                // If we don't have enough data to scan safely, and inner is not done, we must read more.
-                if search_limit == 0 && !self.inner_done {
-                    // fallthrough to read from inner
-                } else {
-                    // Try to find a match within [0..search_limit]
-                    // We use `find` which returns the first match.
+                // Need more data to scan safely?
+                if search_limit > 0 || (self.inner_done && !self.buffer.is_empty()) {
+                    let ac = get_automaton();
+                    // Check matches in the safe window
                     let input_slice = &self.buffer[..search_limit];
 
-                    if let Some(mat) = self.ac.find(input_slice) {
+                    if let Some(mat) = ac.find(input_slice) {
                         let start = mat.start();
-                        // Found a match!
-                        // We need to yield:
-                        // 1. Everything before the match
-                        // 2. The proxy prefix
-                        // 3. The match itself (we don't consume/remove the match, we just prefix it)
-                        // Wait, if we keep the match in the buffer, we will find it again next loop!
-                        // We must CONSUME the buffer up to the end of the match (or at least past the start).
+                        let end = mat.end();
 
-                        // Output logic:
-                        // Chunk 1: buffer[..start] (The text before the link)
-                        // Chunk 2: proxy_prefix
-                        // Chunk 3: buffer[start..end] (The link prefix itself, e.g. "https://github.com")
+                        // Construct output: [Pre-match] + [Prefix] + [Match]
+                        // Note: We leave [Match] (e.g., "https://github.com") in the output stream, just prefixed.
 
-                        // To be efficient with chunks, we combine [Pre] + [Proxy] + [Match] ?
-                        // Or just yield one by one. Yielding small chunks is fine for `Bytes`.
-                        // Let's create a combined buffer to yield one nice chunk if possible, or sequence them.
-                        // Since `poll_next` yields one item, let's construct one `Bytes` object containing the processed data up to the end of the match.
+                        // O(1) split: Take everything up to the match start
+                        let pre_match = self.buffer.split_to(start);
 
-                        let mut output =
-                            Vec::with_capacity(start + self.proxy_prefix.len() + mat.len());
-                        output.extend_from_slice(&self.buffer[..start]);
-                        output.extend_from_slice(self.proxy_prefix.as_bytes());
-                        output.extend_from_slice(&self.buffer[start..mat.end()]);
+                        // We also need to split the match itself to append it after prefix
+                        // split_to modifies `self.buffer`, so indices are relative to current head.
+                        // After split_to(start), the match is now at 0.
+                        let match_part = self.buffer.split_to(end - start);
 
-                        // Remove processed data from internal buffer
-                        // drain is O(N), but necessary. Using a circular buffer is complex for this P3.
-                        // Optimization: If `start` is large, this is fine.
-                        self.buffer.drain(..mat.end());
+                        // Combine into a single Bytes object to yield
+                        // We reserve space for prefix + match part
+                        let mut chunk = BytesMut::with_capacity(
+                            pre_match.len() + self.proxy_prefix.len() + match_part.len(),
+                        );
+                        chunk.put(pre_match);
+                        chunk.put(self.proxy_prefix.as_bytes());
+                        chunk.put(match_part);
 
-                        return Poll::Ready(Some(Ok(Bytes::from(output))));
+                        return Poll::Ready(Some(Ok(chunk.freeze())));
                     } else {
-                        // No match in the safe zone.
-                        // We can safely flush everything in the safe zone to downstream,
-                        // keeping only the "tail" (potential partial match).
-
+                        // No match found in the safe zone.
+                        // We can flush the safe zone to downstream to keep memory usage low.
                         if search_limit > 0 {
-                            let chunk = self.buffer.drain(..search_limit).collect::<Vec<u8>>();
-                            return Poll::Ready(Some(Ok(Bytes::from(chunk))));
-                        }
-
-                        // If search_limit is 0 (buffer small) and inner is done, flushing the rest.
-                        if self.inner_done && !self.buffer.is_empty() {
-                            let chunk = std::mem::take(&mut self.buffer);
-                            return Poll::Ready(Some(Ok(Bytes::from(chunk))));
+                            // O(1) split
+                            let chunk = self.buffer.split_to(search_limit);
+                            return Poll::Ready(Some(Ok(chunk.freeze())));
                         }
                     }
                 }
             }
 
             if self.inner_done {
-                return Poll::Ready(None);
+                // If we are done and buffer is empty, we are finished.
+                if self.buffer.is_empty() {
+                    return Poll::Ready(None);
+                }
+                // If buffer not empty but search_limit was 0 (should correspond to the logic above),
+                // the `search_limit` logic handles the final flush when `inner_done` is true.
+                // So if we reach here, it implies we processed everything possible.
             }
 
-            // 2. Read more data from inner stream
+            // 2. Read more data
             match ready!(Pin::new(&mut self.inner).poll_next(cx)) {
                 Some(Ok(bytes)) => {
-                    // Heuristic: If buffer grows too large without processing, it might be a memory DoS or just a huge block of binary.
-                    // But here we flush regularly. The buffer only grows if we don't find matches but `search_limit` is 0?
-                    // No, `search_limit` grows as buffer grows. The tail is constant size.
                     self.buffer.extend_from_slice(&bytes);
                 }
                 Some(Err(e)) => return Poll::Ready(Some(Err(e))),
                 None => {
                     self.inner_done = true;
-                    // Loop again to flush remaining buffer
                 }
             }
         }
