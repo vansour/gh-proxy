@@ -4,20 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CloudflareStats {
     pub requests: u64,
     pub bytes: u64,
-    pub cached_requests: u64, // 新增：缓存请求数
-    pub cached_bytes: u64,    // 新增：缓存字节数
+    pub cached_requests: u64,
+    pub cached_bytes: u64,
 }
 
 #[derive(Debug)]
 struct CachedStats {
     data: CloudflareStats,
     last_updated: Instant,
+    // 强制刷新标记，用于启动时或配置变更后
+    force_refresh: bool,
 }
 
 impl Default for CachedStats {
@@ -27,6 +29,7 @@ impl Default for CachedStats {
             last_updated: Instant::now()
                 .checked_sub(Duration::from_secs(3600))
                 .unwrap(),
+            force_refresh: true,
         }
     }
 }
@@ -74,19 +77,22 @@ struct Group {
     sum: Sum,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Sum {
     requests: u64,
     bytes: u64,
-    cached_requests: Option<u64>, // GraphQL 字段
-    cached_bytes: Option<u64>,    // GraphQL 字段
+    // 使用 rename 确保字段名准确映射，因为 API 返回的是 camelCase
+    #[serde(rename = "cachedRequests")]
+    cached_requests: Option<u64>,
+    #[serde(rename = "cachedBytes")]
+    cached_bytes: Option<u64>,
 }
 
 impl CloudflareService {
     pub fn new(config: CloudflareConfig) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
             config,
@@ -103,15 +109,18 @@ impl CloudflareService {
             return None;
         }
 
+        // 1. Check cache (Read)
         {
             let cache = self.cache.read().await;
-            if cache.last_updated.elapsed() < Duration::from_secs(300) {
+            // 缓存 10 分钟 (600s)，避免过于频繁调用 GraphQL
+            if !cache.force_refresh && cache.last_updated.elapsed() < Duration::from_secs(600) {
                 return Some(cache.data.clone());
             }
         }
 
+        // 2. Update (Write)
         let mut cache = self.cache.write().await;
-        if cache.last_updated.elapsed() < Duration::from_secs(300) {
+        if !cache.force_refresh && cache.last_updated.elapsed() < Duration::from_secs(600) {
             return Some(cache.data.clone());
         }
 
@@ -123,10 +132,12 @@ impl CloudflareService {
                 );
                 cache.data = stats.clone();
                 cache.last_updated = Instant::now();
+                cache.force_refresh = false;
                 Some(stats)
             }
             Err(e) => {
                 error!("Failed to fetch Cloudflare stats: {}", e);
+                // 失败时也返回旧数据，避免前端空白
                 Some(cache.data.clone())
             }
         }
@@ -134,7 +145,7 @@ impl CloudflareService {
 
     async fn fetch_from_api(&self) -> Result<CloudflareStats, String> {
         let zone_id = &self.config.zone_id;
-        // Fetch last 30 days
+        // 查询最近 30 天的数据
         let query = format!(
             r#"
             query {{
@@ -168,10 +179,23 @@ impl CloudflareService {
             .map_err(|e| e.to_string())?;
 
         if !resp.status().is_success() {
-            return Err(format!("API returned status {}", resp.status()));
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("API Error {}: {}", status, text));
         }
 
-        let body: GraphqlResponse = resp.json().await.map_err(|e| e.to_string())?;
+        // 获取原始文本以便调试
+        let body_text = resp.text().await.map_err(|e| e.to_string())?;
+
+        // 如果您在 config.toml 中设置 level="debug"，这里会打印原始 JSON
+        debug!("Cloudflare GraphQL Response: {}", body_text);
+
+        let body: GraphqlResponse = serde_json::from_str(&body_text).map_err(|e| {
+            format!(
+                "Failed to parse JSON: {} (Body truncated: {:.100})",
+                e, body_text
+            )
+        })?;
 
         if let Some(errors) = body.errors
             && !errors.is_empty()
