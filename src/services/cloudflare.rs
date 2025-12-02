@@ -10,6 +10,8 @@ use tracing::{error, info};
 pub struct CloudflareStats {
     pub requests: u64,
     pub bytes: u64,
+    pub cached_requests: u64, // 新增：缓存请求数
+    pub cached_bytes: u64,    // 新增：缓存字节数
 }
 
 #[derive(Debug)]
@@ -76,6 +78,8 @@ struct Group {
 struct Sum {
     requests: u64,
     bytes: u64,
+    cached_requests: Option<u64>, // GraphQL 字段
+    cached_bytes: Option<u64>,    // GraphQL 字段
 }
 
 impl CloudflareService {
@@ -114,8 +118,8 @@ impl CloudflareService {
         match self.fetch_from_api().await {
             Ok(stats) => {
                 info!(
-                    "Updated Cloudflare stats: {} reqs, {} bytes",
-                    stats.requests, stats.bytes
+                    "Updated Cloudflare stats: {} reqs ({} cached), {} bytes ({} cached)",
+                    stats.requests, stats.cached_requests, stats.bytes, stats.cached_bytes
                 );
                 cache.data = stats.clone();
                 cache.last_updated = Instant::now();
@@ -140,6 +144,8 @@ impl CloudflareService {
                     sum {{
                       requests
                       bytes
+                      cachedRequests
+                      cachedBytes
                     }}
                   }}
                 }}
@@ -181,15 +187,21 @@ impl CloudflareService {
 
         let mut total_reqs = 0;
         let mut total_bytes = 0;
+        let mut total_cached_reqs = 0;
+        let mut total_cached_bytes = 0;
 
         for g in groups {
             total_reqs += g.sum.requests;
             total_bytes += g.sum.bytes;
+            total_cached_reqs += g.sum.cached_requests.unwrap_or(0);
+            total_cached_bytes += g.sum.cached_bytes.unwrap_or(0);
         }
 
         Ok(CloudflareStats {
             requests: total_reqs,
             bytes: total_bytes,
+            cached_requests: total_cached_reqs,
+            cached_bytes: total_cached_bytes,
         })
     }
 }
