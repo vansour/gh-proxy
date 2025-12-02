@@ -46,6 +46,8 @@ pub struct AppState {
     pub auth_header: Option<HeaderValue>,
     pub docker_proxy: Option<Arc<providers::registry::DockerProxy>>,
     pub download_semaphore: Arc<Semaphore>,
+    // Cloudflare service
+    pub cloudflare_service: Arc<services::cloudflare::CloudflareService>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -233,6 +235,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.server.max_concurrent_requests as usize,
     ));
 
+    // Initialize Cloudflare Service
+    let cloudflare_service = Arc::new(services::cloudflare::CloudflareService::new(
+        settings.cloudflare.clone(),
+    ));
+    if cloudflare_service.is_enabled() {
+        info!("Cloudflare analytics integration enabled");
+    }
+
     let app_state = AppState {
         settings: Arc::clone(&settings),
         github_config: Arc::new(github_config),
@@ -244,6 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &settings.registry.default,
         ))),
         download_semaphore,
+        cloudflare_service,
     };
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -258,6 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/script.js", get(handlers::files::serve_static_file))
         .route("/favicon.ico", get(handlers::files::serve_favicon))
         .route("/api/config", get(api::get_config))
+        .route("/api/stats", get(api::get_stats))
         .route("/metrics", get(infra::metrics::metrics_handler))
         .route("/github/{*path}", any(providers::github::github_proxy))
         // Docker Registry V2 compatibility endpoints

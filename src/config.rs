@@ -2,7 +2,9 @@ use http::header::HeaderValue;
 use serde::Deserialize;
 use std::{fs, path::Path};
 use thiserror::Error;
+
 const DEFAULT_CONFIG_PATH: &str = "/app/config/config.toml";
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read config file at {path}: {source}")]
@@ -15,6 +17,7 @@ pub enum ConfigError {
     #[error("configuration validation error: {0}")]
     Validation(String),
 }
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -29,7 +32,10 @@ pub struct Settings {
     pub log: LogConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub cloudflare: CloudflareConfig,
 }
+
 impl Settings {
     pub fn load() -> Result<Self, ConfigError> {
         let config_path = std::env::var("GH_PROXY_CONFIG")
@@ -50,12 +56,29 @@ impl Settings {
         Ok(())
     }
 }
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct CloudflareConfig {
+    #[serde(rename = "zoneId")]
+    pub zone_id: String,
+    #[serde(rename = "apiToken")]
+    pub api_token: String,
+}
+
+impl CloudflareConfig {
+    pub fn is_enabled(&self) -> bool {
+        !self.zone_id.is_empty() && !self.api_token.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProxyConfig {
     #[serde(rename = "allowedHosts")]
     pub allowed_hosts: Vec<String>,
 }
+
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
@@ -84,6 +107,7 @@ impl Default for RegistryConfig {
         }
     }
 }
+
 impl ProxyConfig {
     pub fn validate(&mut self) -> Result<(), ConfigError> {
         let mut normalized = Vec::with_capacity(self.allowed_hosts.len());
@@ -112,17 +136,20 @@ impl ProxyConfig {
             .collect()
     }
 }
+
 #[derive(Debug, Clone)]
 pub struct HostPattern {
     value: String,
     kind: HostPatternKind,
     suffix: Option<String>,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostPatternKind {
     Exact,
     Suffix,
 }
+
 impl HostPattern {
     fn parse(raw: &str) -> Result<Self, String> {
         let mut pattern = raw.trim();
@@ -183,6 +210,7 @@ impl HostPattern {
         }
     }
 }
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -197,6 +225,7 @@ pub struct ServerConfig {
     #[serde(rename = "permitAcquireTimeoutSecs")]
     pub permit_acquire_timeout_secs: u64,
 }
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -209,6 +238,7 @@ impl Default for ServerConfig {
         }
     }
 }
+
 impl ServerConfig {
     fn finalize(&mut self) {
         if self.host.is_empty() {
@@ -247,22 +277,26 @@ impl ServerConfig {
         Ok(())
     }
 }
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ShellConfig {
     pub editor: bool,
 }
+
 impl ShellConfig {
     pub fn is_editor_enabled(&self) -> bool {
         self.editor
     }
 }
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LogConfig {
     pub log_file_path: String,
     pub level: String,
 }
+
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
@@ -271,6 +305,7 @@ impl Default for LogConfig {
         }
     }
 }
+
 impl LogConfig {
     pub fn get_level(&self) -> &str {
         &self.level
@@ -288,11 +323,13 @@ impl LogConfig {
         Ok(())
     }
 }
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct AuthConfig {
     pub token: String,
 }
+
 impl AuthConfig {
     pub fn has_token(&self) -> bool {
         !self.token.trim().is_empty()
@@ -317,10 +354,12 @@ impl AuthConfig {
         HeaderValue::from_str(&value).map(Some)
     }
 }
+
 pub struct GitHubConfig {
     pub default_host: String,
     allowed_hosts: Vec<HostPattern>,
 }
+
 impl GitHubConfig {
     pub fn new(_auth_token: &str, proxy: &ProxyConfig) -> Self {
         Self {
@@ -335,6 +374,7 @@ impl GitHubConfig {
             .any(|pattern| pattern.matches(&host))
     }
 }
+
 pub fn default_config_path() -> &'static Path {
     Path::new(DEFAULT_CONFIG_PATH)
 }
