@@ -326,6 +326,7 @@ async fn shutdown_signal(shutdown_mgr: services::shutdown::ShutdownManager) {
     shutdown_mgr.mark_stopped().await;
 }
 
+// ... (resolve_target_uri_with_validation, resolve_fallback_target, is_github_domain_path, is_shell_script, should_disable_compression_for_request kept same) ...
 fn resolve_target_uri_with_validation(uri: &Uri, host_guard: &GitHubConfig) -> ProxyResult<Uri> {
     let target_uri = resolve_fallback_target(uri).map_err(|msg| {
         debug!("Fallback target resolution failed: {}", msg);
@@ -438,6 +439,21 @@ fn should_disable_compression_for_request(uri: &Uri) -> bool {
     false
 }
 
+/// Helper to get the real client IP (e.g. from Cloudflare header)
+fn get_client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("cf-connecting-ip")
+        .and_then(|h| h.to_str().ok())
+        .or_else(|| {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.split(',').next()) // Take the first IP if multiple
+        })
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 #[instrument(skip_all)]
 async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
@@ -456,6 +472,7 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         .and_then(|h| h.to_str().ok())
         .unwrap_or("localhost:8080")
         .to_string();
+    let client_ip = get_client_ip(req.headers());
     let proxy_scheme = services::request::detect_client_protocol(&req);
     let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
 
@@ -463,6 +480,7 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         match resolve_target_uri_with_validation(req.uri(), state.github_config.as_ref()) {
             Ok(uri) => uri,
             Err(_) => {
+                info!("Invalid target [IP: {}]: {}", client_ip, path);
                 let error_msg = format!("404 Not Found\n\nInvalid target: {}\n", path);
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -470,6 +488,8 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
                     .unwrap();
             }
         };
+
+    info!("Proxying request [IP: {}] -> {}", client_ip, target_uri);
 
     let post_processor = if state.settings.shell.editor {
         Some(ResponsePostProcessor::ShellEditor {
@@ -481,7 +501,10 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
 
     match proxy_request(&state, req, target_uri, post_processor).await {
         Ok(response) => response,
-        Err(error) => error_response(error),
+        Err(error) => {
+            warn!("Proxy error [IP: {}]: {}", client_ip, error);
+            error_response(error)
+        }
     }
 }
 
