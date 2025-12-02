@@ -6,13 +6,33 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use reqwest::Method;
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use std::time::Duration;
-// Arc not required in this module directly
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
+
+// Token cache entry
+#[derive(Debug, Clone)]
+struct CachedToken {
+    token: String,
+    expires_at: Instant,
+}
 
 pub struct DockerProxy {
     client: reqwest::Client,
     registry_url: String,
+    // Cache key: "realm|service|scope" -> Token
+    token_cache: Arc<RwLock<HashMap<String, CachedToken>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    token: Option<String>,
+    access_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
 }
 
 impl DockerProxy {
@@ -41,6 +61,7 @@ impl DockerProxy {
         Self {
             client,
             registry_url,
+            token_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -94,17 +115,21 @@ impl DockerProxy {
                 .get("www-authenticate")
                 .and_then(|h| h.to_str().ok())
             && www_str.to_lowercase().starts_with("bearer")
-            && let Ok(token) = self.request_bearer_token(www_str).await
         {
-            // retry original request with Authorization header
-            let mut req2 = self.client.request(method, url);
-            if let Some(hs2) = &extra_headers {
-                for (k, v) in hs2.iter() {
-                    req2 = req2.header(*k, *v);
+            // Attempt to get token (cached or fresh)
+            if let Ok(token) = self.request_bearer_token(www_str).await {
+                // retry original request with Authorization header
+                let mut req2 = self.client.request(method, url);
+                if let Some(hs2) = &extra_headers {
+                    for (k, v) in hs2.iter() {
+                        req2 = req2.header(*k, *v);
+                    }
                 }
+                req2 = req2.bearer_auth(token);
+                return req2.send().await;
+            } else {
+                tracing::warn!("Failed to retrieve bearer token for challenge: {}", www_str);
             }
-            req2 = req2.bearer_auth(token);
-            return req2.send().await;
         }
         Ok(res)
     }
@@ -131,37 +156,77 @@ impl DockerProxy {
             None => "",
         }
         .trim();
+
         let pairs = parse_kv_pairs(rest);
         let realm = match pairs.get("realm") {
             Some(r) => r.clone(),
             None => return Err("WWW-Authenticate header missing realm".to_string()),
         };
-        let service = pairs.get("service").cloned();
-        let scope = pairs.get("scope").cloned();
+        let service = pairs.get("service").cloned().unwrap_or_default();
+        let scope = pairs.get("scope").cloned().unwrap_or_default();
 
-        let mut req = self.client.get(&realm);
-        if let Some(svc) = service {
-            req = req.query(&[("service", svc)]);
+        // 1. Construct Cache Key
+        let cache_key = format!("{}|{}|{}", realm, service, scope);
+
+        // 2. Check Cache (Read)
+        {
+            let cache = self.token_cache.read().await;
+            if let Some(entry) = cache.get(&cache_key)
+                && entry.expires_at > Instant::now()
+            {
+                tracing::debug!("Token cache hit for scope: {}", scope);
+                return Ok(entry.token.clone());
+            }
         }
-        if let Some(scp) = scope {
-            req = req.query(&[("scope", scp)]);
+
+        // 3. Cache Miss - Fetch from Upstream
+        tracing::debug!("Token cache miss, fetching for scope: {}", scope);
+        let mut req = self.client.get(&realm);
+        if !service.is_empty() {
+            req = req.query(&[("service", &service)]);
+        }
+        if !scope.is_empty() {
+            req = req.query(&[("scope", &scope)]);
         }
 
         let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("token fetch failed: {}", resp.status()));
         }
-        let body = resp.text().await.map_err(|e| e.to_string())?;
-        // token response typically contains `{"token":"..."}` or `{"access_token":"..."}`
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            if let Some(token) = json.get("token").and_then(|v| v.as_str()) {
-                return Ok(token.to_string());
-            }
-            if let Some(token) = json.get("access_token").and_then(|v| v.as_str()) {
-                return Ok(token.to_string());
-            }
+
+        let token_resp: TokenResponse = resp.json().await.map_err(|e| e.to_string())?;
+
+        let token = token_resp
+            .token
+            .or(token_resp.access_token)
+            .ok_or_else(|| "token not found in token response".to_string())?;
+
+        // 4. Determine Expiration (Default 60s if missing)
+        // Subtract a small buffer (e.g. 10s) to be safe
+        let expires_in_secs = token_resp
+            .expires_in
+            .unwrap_or(60)
+            .saturating_sub(10)
+            .max(10);
+        let expires_at = Instant::now() + Duration::from_secs(expires_in_secs);
+
+        // 5. Update Cache (Write)
+        {
+            let mut cache = self.token_cache.write().await;
+            // Clean up expired tokens occasionally?
+            // For simplicity, we just insert. A full garbage collector might be overkill
+            // unless the proxy runs for months with millions of unique repos.
+            // A quick random prune could be added if needed, but let's keep it simple for P0.
+            cache.insert(
+                cache_key,
+                CachedToken {
+                    token: token.clone(),
+                    expires_at,
+                },
+            );
         }
-        Err("token not found in token response".to_string())
+
+        Ok(token)
     }
 
     pub async fn get_manifest(
@@ -187,6 +252,9 @@ impl DockerProxy {
                         "Accept",
                         "application/vnd.docker.distribution.manifest.list.v2+json",
                     ),
+                    // Add OCI manifest support
+                    ("Accept", "application/vnd.oci.image.manifest.v1+json"),
+                    ("Accept", "application/vnd.oci.image.index.v1+json"),
                 ]),
             )
             .await
@@ -220,10 +288,18 @@ impl DockerProxy {
             .fetch_with_auth(
                 Method::HEAD,
                 &url,
-                Some(vec![(
-                    "Accept",
-                    "application/vnd.docker.distribution.manifest.v2+json",
-                )]),
+                Some(vec![
+                    (
+                        "Accept",
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                    ),
+                    (
+                        "Accept",
+                        "application/vnd.docker.distribution.manifest.list.v2+json",
+                    ),
+                    ("Accept", "application/vnd.oci.image.manifest.v1+json"),
+                    ("Accept", "application/vnd.oci.image.index.v1+json"),
+                ]),
             )
             .await
             .map_err(|e| e.to_string())?;
