@@ -22,6 +22,11 @@
             --error: #BA1A1A;
             --shadow: rgba(0, 0, 0, 0.1);
 
+            /* 进度条颜色 */
+            --progress-bg: #E0E2EC;
+            --progress-fill: #4caf50;
+            /* 绿色代表节省/缓存 */
+
             --radius-lg: 24px;
             --radius-md: 12px;
             --radius-sm: 8px;
@@ -42,6 +47,9 @@
                 --outline: #8D9199;
                 --error: #FFB4AB;
                 --shadow: rgba(0, 0, 0, 0.3);
+
+                --progress-bg: #363940;
+                --progress-fill: #81c784;
             }
         }
 
@@ -334,40 +342,71 @@
             white-space: nowrap;
         }
 
-        /* Stats Grid */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
+        /* 长条形统计数据样式 */
+        .stats-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
             margin-top: auto;
         }
 
-        .stat-card {
-            text-align: center;
-            padding: 12px;
+        .stat-bar-card {
             background: var(--surface-variant);
             border-radius: var(--radius-md);
-            color: var(--on-surface-variant);
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
 
-        .stat-label {
-            font-size: 11px;
-            opacity: 0.8;
-            margin-bottom: 4px;
-        }
-
-        .stat-val {
-            display: block;
-            font-size: 16px;
-            font-weight: 700;
+        .stat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 14px;
             color: var(--on-surface);
+            font-weight: 500;
         }
 
-        .stat-sub {
-            font-size: 10px;
-            opacity: 0.6;
-            display: block;
+        .stat-value {
+            font-family: "JetBrains Mono", monospace;
+            font-weight: 700;
+        }
+
+        .stat-subtext {
+            font-size: 12px;
+            color: var(--on-surface-variant);
+            opacity: 0.8;
+        }
+
+        .progress-track {
+            height: 12px;
+            background-color: rgba(0, 0, 0, 0.1);
+            border-radius: 6px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background-color: var(--progress-fill);
+            width: 0%;
+            /* Initial */
+            transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 6px;
+        }
+
+        .stat-details {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--on-surface-variant);
             margin-top: 2px;
+        }
+
+        /* 隐藏空状态 */
+        .stats-container.hidden {
+            display: none;
         }
 
         footer {
@@ -489,16 +528,36 @@
                 <div class="history-list" id="historyList"></div>
             </div>
 
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">总请求数</div>
-                    <span class="stat-val" id="cfReqs">-</span>
-                    <span class="stat-sub">Cloudflare 近30天</span>
+            <!-- 长条形统计数据面板 -->
+            <div class="stats-container hidden" id="statsContainer">
+                <!-- 流量统计条 -->
+                <div class="stat-bar-card">
+                    <div class="stat-header">
+                        <span>近30天总流量</span>
+                        <span class="stat-value" id="cfTotalBytes">-</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="cfBytesBar" style="width: 0%"></div>
+                    </div>
+                    <div class="stat-details">
+                        <span>节省流量 (缓存)</span>
+                        <span><span id="cfCachedBytes">-</span> (<span id="cfCachedBytesPct">0%</span>)</span>
+                    </div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-label">总流量</div>
-                    <span class="stat-val" id="cfBytes">-</span>
-                    <span class="stat-sub">Cloudflare 近30天</span>
+
+                <!-- 请求统计条 -->
+                <div class="stat-bar-card">
+                    <div class="stat-header">
+                        <span>近30天总请求</span>
+                        <span class="stat-value" id="cfTotalReqs">-</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="cfReqsBar" style="width: 0%"></div>
+                    </div>
+                    <div class="stat-details">
+                        <span>缓存命中请求</span>
+                        <span><span id="cfCachedReqs">-</span> (<span id="cfCachedReqsPct">0%</span>)</span>
+                    </div>
                 </div>
             </div>
         </main>
@@ -533,9 +592,16 @@
                     historySection: document.getElementById('historySection'),
                     historyList: document.getElementById('historyList'),
                     clearHistoryBtn: document.getElementById('clearHistoryBtn'),
-                    // Stats
-                    cfReqs: document.getElementById('cfReqs'),
-                    cfBytes: document.getElementById('cfBytes'),
+                    // New Stats Elements
+                    statsContainer: document.getElementById('statsContainer'),
+                    cfTotalBytes: document.getElementById('cfTotalBytes'),
+                    cfCachedBytes: document.getElementById('cfCachedBytes'),
+                    cfCachedBytesPct: document.getElementById('cfCachedBytesPct'),
+                    cfBytesBar: document.getElementById('cfBytesBar'),
+                    cfTotalReqs: document.getElementById('cfTotalReqs'),
+                    cfCachedReqs: document.getElementById('cfCachedReqs'),
+                    cfCachedReqsPct: document.getElementById('cfCachedReqsPct'),
+                    cfReqsBar: document.getElementById('cfReqsBar'),
                     versionBadge: document.getElementById('versionBadge')
                 };
 
@@ -558,7 +624,7 @@
                     bindEvents();
                     renderHistory();
                     fetchData();
-                    setInterval(fetchStats, 10000);
+                    setInterval(fetchStats, 15000); // Update every 15s to respect cache
                 }
 
                 function bindEvents() {
@@ -739,9 +805,21 @@
                 function formatBytes(bytes) {
                     if (bytes === 0) return '0 B';
                     const k = 1024;
-                    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                    const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
                     const i = Math.floor(Math.log(bytes) / Math.log(k));
                     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                }
+
+                function updateStatBar(totalEl, cachedEl, pctEl, barEl, total, cached, formatter = n => n.toLocaleString()) {
+                    totalEl.textContent = formatter(total);
+                    cachedEl.textContent = formatter(cached);
+
+                    let pct = 0;
+                    if (total > 0) {
+                        pct = Math.round((cached / total) * 100);
+                    }
+                    pctEl.textContent = `${pct}%`;
+                    barEl.style.width = `${pct}%`;
                 }
 
                 async function fetchStats() {
@@ -750,11 +828,17 @@
                         if (res.ok) {
                             const data = await res.json();
                             if (data.cloudflare) {
-                                EL.cfReqs.textContent = data.cloudflare.requests.toLocaleString();
-                                EL.cfBytes.textContent = formatBytes(data.cloudflare.bytes);
-                            } else {
-                                EL.cfReqs.textContent = '未配置';
-                                EL.cfBytes.textContent = '未配置';
+                                EL.statsContainer.classList.remove('hidden');
+
+                                updateStatBar(
+                                    EL.cfTotalBytes, EL.cfCachedBytes, EL.cfCachedBytesPct, EL.cfBytesBar,
+                                    data.cloudflare.bytes, data.cloudflare.cached_bytes, formatBytes
+                                );
+
+                                updateStatBar(
+                                    EL.cfTotalReqs, EL.cfCachedReqs, EL.cfCachedReqsPct, EL.cfReqsBar,
+                                    data.cloudflare.requests, data.cloudflare.cached_requests
+                                );
                             }
                         }
                     } catch (e) {
