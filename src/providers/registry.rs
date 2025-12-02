@@ -64,6 +64,15 @@ impl DockerProxy {
         }
     }
 
+    /// Fixes compatibility issues where some clients/proxies replace ':' with '-' in digests.
+    /// E.g. "sha256-123..." -> "sha256:123..."
+    fn normalize_reference_or_digest(&self, value: &str) -> String {
+        if value.starts_with("sha256-") && value.len() > 64 {
+            return value.replacen("sha256-", "sha256:", 1);
+        }
+        value.to_string()
+    }
+
     async fn fetch_with_auth(
         &self,
         method: Method,
@@ -160,6 +169,7 @@ impl DockerProxy {
         name: &str,
         reference: &str,
     ) -> Result<(String, String), String> {
+        let reference = self.normalize_reference_or_digest(reference);
         let (registry_url, image_name) = self.split_registry_and_name(name);
         let url = format!("{}/v2/{}/manifests/{}", registry_url, image_name, reference);
         tracing::info!(registry = %registry_url, image = %image_name, reference = %reference, "Fetching manifest");
@@ -201,6 +211,7 @@ impl DockerProxy {
         name: &str,
         reference: &str,
     ) -> Result<(String, u64), String> {
+        let reference = self.normalize_reference_or_digest(reference);
         let (registry_url, image_name) = self.split_registry_and_name(name);
         let url = format!("{}/v2/{}/manifests/{}", registry_url, image_name, reference);
         tracing::info!(registry = %registry_url, image = %image_name, reference = %reference, "HEAD manifest");
@@ -235,6 +246,7 @@ impl DockerProxy {
     }
 
     pub async fn get_blob(&self, name: &str, digest: &str) -> Result<reqwest::Response, String> {
+        let digest = self.normalize_reference_or_digest(digest);
         let (registry_url, image_name) = self.split_registry_and_name(name);
         let url = format!("{}/v2/{}/blobs/{}", registry_url, image_name, digest);
         tracing::info!(registry = %registry_url, image = %image_name, digest = %digest, "Fetching blob");
@@ -244,6 +256,7 @@ impl DockerProxy {
     }
 
     pub async fn head_blob(&self, name: &str, digest: &str) -> Result<u64, String> {
+        let digest = self.normalize_reference_or_digest(digest);
         let (registry_url, image_name) = self.split_registry_and_name(name);
         let url = format!("{}/v2/{}/blobs/{}", registry_url, image_name, digest);
         tracing::info!(registry = %registry_url, image = %image_name, digest = %digest, "HEAD blob");
@@ -269,6 +282,8 @@ impl DockerProxy {
         digest: &str,
         reference: &str,
     ) -> Result<(u64, u64), String> {
+        let digest = self.normalize_reference_or_digest(digest);
+        let reference = self.normalize_reference_or_digest(reference);
         let (registry_url, image_name) = self.split_registry_and_name(name);
         let manifest_url = format!("{}/v2/{}/manifests/{}", registry_url, image_name, reference);
 
