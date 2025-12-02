@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,9 +9,7 @@
     <title>GitHub 文件加速</title>
 
     <style>
-        /* ============ 核心样式 (零依赖) ============ */
         :root {
-            /* 颜色系统 - 基于 Material 3 */
             --primary: #0061A4;
             --on-primary: #FFFFFF;
             --primary-container: #D1E4FF;
@@ -23,7 +22,6 @@
             --error: #BA1A1A;
             --shadow: rgba(0, 0, 0, 0.1);
 
-            /* 间距与圆角 */
             --radius-lg: 24px;
             --radius-md: 12px;
             --radius-sm: 8px;
@@ -53,8 +51,7 @@
         }
 
         body {
-            /* 使用系统字体栈，极致加载速度 */
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             background-color: var(--surface);
             color: var(--on-surface);
             margin: 0;
@@ -74,7 +71,6 @@
             flex-direction: column;
         }
 
-        /* 头部 */
         .app-bar {
             padding: var(--spacing-lg) 0;
             text-align: center;
@@ -88,7 +84,6 @@
             letter-spacing: -0.5px;
         }
 
-        /* 卡片通用样式 */
         .card {
             background: var(--surface);
             border: 1px solid var(--surface-variant);
@@ -96,15 +91,13 @@
             padding: var(--spacing-lg);
             margin-bottom: var(--spacing-lg);
             box-shadow: 0 4px 12px var(--shadow);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            transition: transform 0.2s ease;
         }
 
-        /* 输入区域 */
         .input-group {
             margin-bottom: var(--spacing-lg);
         }
 
-        /* 新增：包裹输入框和按钮的容器，用于定位上下文 */
         .input-container {
             position: relative;
         }
@@ -113,7 +106,6 @@
             width: 100%;
             padding: 16px;
             padding-right: 80px;
-            /* 为右侧按钮留空间 */
             border: 2px solid var(--surface-variant);
             border-radius: var(--radius-md);
             background: transparent;
@@ -189,7 +181,6 @@
             }
         }
 
-        /* 格式选择器 */
         .format-selector {
             display: flex;
             background: var(--surface-variant);
@@ -197,7 +188,6 @@
             border-radius: var(--radius-md);
             margin-bottom: var(--spacing-lg);
             overflow-x: auto;
-            /* 移动端横滑 */
         }
 
         .format-btn {
@@ -220,7 +210,6 @@
             box-shadow: 0 2px 4px var(--shadow);
         }
 
-        /* 主操作按钮 */
         .submit-btn {
             width: 100%;
             padding: 14px;
@@ -252,7 +241,6 @@
             fill: currentColor;
         }
 
-        /* 输出区域 */
         .output-card {
             background-color: var(--primary-container);
             color: var(--on-primary-container);
@@ -290,7 +278,6 @@
             gap: 8px;
         }
 
-        /* 历史记录 */
         .history-section {
             margin-top: var(--spacing-lg);
         }
@@ -347,31 +334,42 @@
             white-space: nowrap;
         }
 
-        /* 状态栏 */
-        .stats-row {
-            display: flex;
-            gap: var(--spacing-md);
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
             margin-top: auto;
         }
 
         .stat-card {
-            flex: 1;
             text-align: center;
-            padding: 16px;
+            padding: 12px;
             background: var(--surface-variant);
             border-radius: var(--radius-md);
             color: var(--on-surface-variant);
         }
 
-        .stat-val {
-            display: block;
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--on-surface);
-            margin-top: 4px;
+        .stat-label {
+            font-size: 11px;
+            opacity: 0.8;
+            margin-bottom: 4px;
         }
 
-        /* Footer */
+        .stat-val {
+            display: block;
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--on-surface);
+        }
+
+        .stat-sub {
+            font-size: 10px;
+            opacity: 0.6;
+            display: block;
+            margin-top: 2px;
+        }
+
         footer {
             text-align: center;
             padding: 24px 0;
@@ -384,7 +382,6 @@
             text-decoration: none;
         }
 
-        /* Toast */
         .toast {
             position: fixed;
             bottom: 30px;
@@ -427,7 +424,6 @@
 
         <main>
             <div class="card">
-                <!-- 格式选择 -->
                 <div class="format-selector" id="formatSelector">
                     <button class="format-btn active" data-format="direct">Direct Link</button>
                     <button class="format-btn" data-format="git">Git Clone</button>
@@ -436,7 +432,6 @@
                     <button class="format-btn" data-format="docker">Docker</button>
                 </div>
 
-                <!-- 输入框 -->
                 <div class="input-group">
                     <div class="input-container">
                         <input type="text" class="text-field" id="inputUrl" placeholder="粘贴 GitHub 链接 (https://...)"
@@ -468,7 +463,6 @@
                 </button>
             </div>
 
-            <!-- 输出结果 -->
             <div class="card output-card" id="outputCard">
                 <div class="output-content" id="outputContent"></div>
                 <div class="output-actions">
@@ -481,13 +475,12 @@
                     <button class="icon-btn" id="openBtn" title="新窗口打开">
                         <svg viewBox="0 0 24 24">
                             <path
-                                d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z" />
+                                d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
                         </svg>
                     </button>
                 </div>
             </div>
 
-            <!-- 历史记录 -->
             <div class="history-section" id="historySection" style="display:none;">
                 <div class="history-title">
                     <span>最近使用</span>
@@ -496,15 +489,16 @@
                 <div class="history-list" id="historyList"></div>
             </div>
 
-            <!-- 状态信息 -->
-            <div class="stats-row">
+            <div class="stats-grid">
                 <div class="stat-card">
-                    <div style="font-size: 12px;">文件限制</div>
-                    <span class="stat-val" id="limitStat">-</span>
+                    <div class="stat-label">总请求数</div>
+                    <span class="stat-val" id="cfReqs">-</span>
+                    <span class="stat-sub">Cloudflare 近30天</span>
                 </div>
                 <div class="stat-card">
-                    <div style="font-size: 12px;">Shell 编辑</div>
-                    <span class="stat-val" id="shellStat">-</span>
+                    <div class="stat-label">总流量</div>
+                    <span class="stat-val" id="cfBytes">-</span>
+                    <span class="stat-sub">Cloudflare 近30天</span>
                 </div>
             </div>
         </main>
@@ -539,8 +533,9 @@
                     historySection: document.getElementById('historySection'),
                     historyList: document.getElementById('historyList'),
                     clearHistoryBtn: document.getElementById('clearHistoryBtn'),
-                    limitStat: document.getElementById('limitStat'),
-                    shellStat: document.getElementById('shellStat'),
+                    // Stats
+                    cfReqs: document.getElementById('cfReqs'),
+                    cfBytes: document.getElementById('cfBytes'),
                     versionBadge: document.getElementById('versionBadge')
                 };
 
@@ -551,27 +546,22 @@
 
                 const CONFIG = {
                     API_CONFIG: '/api/config',
+                    API_STATS: '/api/stats',
                     API_HEALTH: '/healthz'
                 };
 
-                // --- 初始化 ---
                 function init() {
-                    // 自动聚焦
                     EL.input.focus();
-
-                    // 检查剪贴板权限显示粘贴按钮
                     if (navigator.clipboard && navigator.clipboard.readText) {
                         EL.pasteBtn.style.display = 'flex';
                     }
-
                     bindEvents();
                     renderHistory();
                     fetchData();
+                    setInterval(fetchStats, 10000);
                 }
 
-                // --- 事件绑定 ---
                 function bindEvents() {
-                    // 格式切换
                     EL.formatBtns.forEach(btn => {
                         btn.addEventListener('click', () => {
                             EL.formatBtns.forEach(b => b.classList.remove('active'));
@@ -581,7 +571,6 @@
                         });
                     });
 
-                    // 输入处理
                     EL.input.addEventListener('input', () => {
                         const hasVal = !!EL.input.value.trim();
                         EL.clearBtn.style.display = hasVal ? 'flex' : 'none';
@@ -593,7 +582,6 @@
                         if (e.key === 'Enter') processInput();
                     });
 
-                    // 按钮操作
                     EL.clearBtn.addEventListener('click', () => {
                         EL.input.value = '';
                         EL.input.focus();
@@ -615,16 +603,11 @@
 
                     EL.generateBtn.addEventListener('click', processInput);
 
-                    EL.copyBtn.addEventListener('click', () => {
-                        const text = EL.outputContent.textContent;
-                        copyToClipboard(text);
-                    });
+                    EL.copyBtn.addEventListener('click', () => copyToClipboard(EL.outputContent.textContent));
 
                     EL.openBtn.addEventListener('click', () => {
                         const text = EL.outputContent.textContent;
-                        if (/^https?:\/\//.test(text)) {
-                            window.open(text, '_blank');
-                        }
+                        if (/^https?:\/\//.test(text)) window.open(text, '_blank');
                     });
 
                     EL.clearHistoryBtn.addEventListener('click', () => {
@@ -634,15 +617,12 @@
                     });
                 }
 
-                // --- 核心逻辑 ---
                 function processInput() {
                     const rawUrl = EL.input.value.trim();
                     if (!rawUrl) return showError('请输入链接');
 
-                    // 基础校验
                     const isDocker = STATE.format === 'docker';
                     if (!isDocker && !/^https?:\/\//i.test(rawUrl) && !/^github\.com/i.test(rawUrl)) {
-                        // 尝试自动补全协议
                         if (/^github\.com/.test(rawUrl)) {
                             EL.input.value = 'https://' + rawUrl;
                             return processInput();
@@ -670,23 +650,15 @@
                                     result = `git clone ${directLink}`;
                                     isUrl = false;
                                     break;
-                                case 'wget':
-                                    result = `wget "${directLink}"`;
-                                    isUrl = false;
-                                    break;
-                                case 'curl':
-                                    result = `curl -O "${directLink}"`;
-                                    isUrl = false;
-                                    break;
-                                default:
-                                    result = directLink;
+                                case 'wget': result = `wget "${directLink}"`; isUrl = false; break;
+                                case 'curl': result = `curl -O "${directLink}"`; isUrl = false; break;
+                                default: result = directLink;
                             }
                         }
                     } catch (e) {
                         return showError('解析错误，请检查链接');
                     }
 
-                    // 成功处理
                     showOutput(result, isUrl);
                     addToHistory(rawUrl);
                 }
@@ -704,9 +676,7 @@
                     EL.outputCard.style.display = 'none';
                 }
 
-                // --- 历史记录 ---
                 function addToHistory(url) {
-                    // 去重并置顶
                     STATE.history = STATE.history.filter(item => item !== url);
                     STATE.history.unshift(url);
                     if (STATE.history.length > 5) STATE.history.pop();
@@ -732,7 +702,6 @@
             `).join('');
                 }
 
-                // --- 工具函数 ---
                 async function copyToClipboard(text) {
                     try {
                         if (navigator.clipboard) {
@@ -746,8 +715,6 @@
                             document.body.removeChild(ta);
                         }
                         showToast('已复制');
-
-                        // 按钮视觉反馈
                         const originalSvg = EL.copyBtn.innerHTML;
                         EL.copyBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#4caf50"/></svg>';
                         setTimeout(() => EL.copyBtn.innerHTML = originalSvg, 1500);
@@ -769,30 +736,44 @@
                     return digestRe.test(s) || tagRe.test(s);
                 }
 
-                async function fetchData() {
+                function formatBytes(bytes) {
+                    if (bytes === 0) return '0 B';
+                    const k = 1024;
+                    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                }
+
+                async function fetchStats() {
                     try {
-                        const [configRes, healthRes] = await Promise.allSettled([
-                            fetch(CONFIG.API_CONFIG),
-                            fetch(CONFIG.API_HEALTH)
-                        ]);
-
-                        if (configRes.status === 'fulfilled' && configRes.value.ok) {
-                            const cfg = await configRes.value.json();
-                            EL.limitStat.textContent = cfg.server ? `${cfg.server.sizeLimit} MB` : '?';
-                            EL.shellStat.textContent = cfg.shell && cfg.shell.editor ? '开启' : '关闭';
-                        }
-
-                        if (healthRes.status === 'fulfilled' && healthRes.value.ok) {
-                            const health = await healthRes.value.json();
-                            if (health.version) EL.versionBadge.textContent = `v${health.version}`;
+                        const res = await fetch(CONFIG.API_STATS);
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data.cloudflare) {
+                                EL.cfReqs.textContent = data.cloudflare.requests.toLocaleString();
+                                EL.cfBytes.textContent = formatBytes(data.cloudflare.bytes);
+                            } else {
+                                EL.cfReqs.textContent = '未配置';
+                                EL.cfBytes.textContent = '未配置';
+                            }
                         }
                     } catch (e) {
-                        console.warn('API fetch failed', e);
+                        console.warn('Stats fetch failed', e);
                     }
+                }
+
+                async function fetchData() {
+                    try {
+                        fetch(CONFIG.API_HEALTH).then(res => res.json()).then(h => {
+                            if (h.version) EL.versionBadge.textContent = `v${h.version}`;
+                        }).catch(() => { });
+                        fetchStats();
+                    } catch (e) { }
                 }
 
                 init();
             })();
     </script>
 </body>
+
 </html>
