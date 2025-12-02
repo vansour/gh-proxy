@@ -1,6 +1,6 @@
 [package]
 name = "gh-proxy"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 [dependencies]
 axum = { version = "0.8.6", features = ["http1", "http2"] }
@@ -30,3 +30,15 @@ prometheus = "0.14.0"
 once_cell = "1.21.0"
 aho-corasick = "1.1.4"
 chrono = { version = "0.4.42", features = ["serde"] }
+
+# 内存分配优化
+[target.'cfg(not(target_env = "gnu"))'.dependencies]
+tikv-jemallocator = "0.6.1"
+
+# 编译优化配置
+[profile.release]
+lto = true        # 开启链接时优化，减小体积，提升性能
+codegen-units = 1 # 牺牲编译速度换取更好的优化
+panic = "abort"   # 减小二进制体积，崩溃时直接退出不展开栈
+strip = true      # 移除符号表
+opt-level = 3     # 最高优化等级
