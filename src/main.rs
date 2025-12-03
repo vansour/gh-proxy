@@ -23,10 +23,17 @@ use std::{
 use tokio::signal;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, warn};
 
-// Import the new text processor
 use crate::services::text_processor::TextReplacementStream;
+
+// Use Jemalloc for better memory management on Linux
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 mod api;
 mod config;
@@ -46,8 +53,8 @@ pub struct AppState {
     pub auth_header: Option<HeaderValue>,
     pub docker_proxy: Option<Arc<providers::registry::DockerProxy>>,
     pub download_semaphore: Arc<Semaphore>,
-    // Cloudflare service
     pub cloudflare_service: Arc<services::cloudflare::CloudflareService>,
+    pub ip_info_service: Arc<services::ipinfo::IpInfoService>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -243,6 +250,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Cloudflare analytics integration enabled");
     }
 
+    // Initialize IP Info Service
+    let ip_info_service = Arc::new(services::ipinfo::IpInfoService::new(
+        settings.ipinfo.token.clone(),
+    ));
+
     let app_state = AppState {
         settings: Arc::clone(&settings),
         github_config: Arc::new(github_config),
@@ -255,6 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))),
         download_semaphore,
         cloudflare_service,
+        ip_info_service,
     };
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -284,7 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(providers::registry::debug_blob_info),
         )
         .route("/registry/healthz", get(providers::registry::healthz))
-        .fallback(fallback_proxy)
+        .fallback(proxy_handler) // Renamed from fallback_proxy
         .with_state(app_state.clone())
         .layer(cors);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -338,7 +351,7 @@ async fn shutdown_signal(shutdown_mgr: services::shutdown::ShutdownManager) {
     shutdown_mgr.mark_stopped().await;
 }
 
-// ... (resolve_target_uri_with_validation, resolve_fallback_target, is_github_domain_path, is_shell_script, should_disable_compression_for_request kept same) ...
+// ... (resolve_target_uri_with_validation, resolve_fallback_target, is_github_domain_path, should_disable_compression_for_request kept same) ...
 fn resolve_target_uri_with_validation(uri: &Uri, host_guard: &GitHubConfig) -> ProxyResult<Uri> {
     let target_uri = resolve_fallback_target(uri).map_err(|msg| {
         debug!("Fallback target resolution failed: {}", msg);
@@ -466,8 +479,8 @@ fn get_client_ip(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-#[instrument(skip_all)]
-async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
+// Renamed from fallback_proxy and removed instrumentation
+async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
     if matches!(
         path,
@@ -488,11 +501,23 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
     let proxy_scheme = services::request::detect_client_protocol(&req);
     let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
 
+    // Fetch AS Name asynchronously
+    let as_name = state
+        .ip_info_service
+        .get_as_name(&client_ip)
+        .await
+        .unwrap_or_default();
+    let as_info = if as_name.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", as_name)
+    };
+
     let target_uri =
         match resolve_target_uri_with_validation(req.uri(), state.github_config.as_ref()) {
             Ok(uri) => uri,
             Err(_) => {
-                info!("Invalid target [IP: {}]: {}", client_ip, path);
+                info!("Invalid target [IP: {}{}]: {}", client_ip, as_info, path);
                 let error_msg = format!("404 Not Found\n\nInvalid target: {}\n", path);
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -500,8 +525,6 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
                     .unwrap();
             }
         };
-
-    info!("Proxying request [IP: {}] -> {}", client_ip, target_uri);
 
     let post_processor = if state.settings.shell.editor {
         Some(ResponsePostProcessor::ShellEditor {
@@ -511,10 +534,23 @@ async fn fallback_proxy(State(state): State<AppState>, req: Request<Body>) -> Re
         None
     };
 
+    // Determine if we are likely to stream/edit based on extension (heuristic for logging)
+    let streaming_tag =
+        if state.settings.shell.editor && should_disable_compression_for_request(&target_uri) {
+            " [streaming]"
+        } else {
+            ""
+        };
+
+    info!(
+        "Proxying request [IP: {}{}] -> {}{}",
+        client_ip, as_info, target_uri, streaming_tag
+    );
+
     match proxy_request(&state, req, target_uri, post_processor).await {
         Ok(response) => response,
         Err(error) => {
-            warn!("Proxy error [IP: {}]: {}", client_ip, error);
+            warn!("Proxy error [IP: {}{}]: {}", client_ip, as_info, error);
             error_response(error)
         }
     }
@@ -591,7 +627,7 @@ pub async fn proxy_request(
             #[allow(clippy::collapsible_if)]
             if let Some(loc) = location {
                 if let Ok(new_uri) = loc.parse::<Uri>() {
-                    current_uri = new_uri; // Should handle relative URIs properly in a full impl
+                    current_uri = new_uri;
                     let retry_body = body_bytes
                         .as_ref()
                         .map(|b| Body::from(b.clone()))
@@ -616,7 +652,6 @@ pub async fn proxy_request(
     };
 
     let status = response.status();
-    // Increment global request counter
     infra::metrics::HTTP_REQUESTS_TOTAL.inc();
 
     let content_type = response
@@ -630,7 +665,6 @@ pub async fn proxy_request(
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    // Check size limit if Content-Length is present
     if let Some(len) = content_length
         && len > size_limit_bytes
     {
@@ -645,22 +679,18 @@ pub async fn proxy_request(
         && is_response_needs_text_processing(&content_type, &target_uri, shell_processing_enabled);
 
     if needs_text_processing {
-        info!("Applying streaming text replacement for {}", current_uri);
+        // Log "Applying..." is removed as requested by user
         let proxy_url = processor_proxy_url(&processor).unwrap();
 
-        // Sanitize headers for modified content
         sanitize_response_headers(&mut parts.headers, true, true, true);
         fix_content_type_header(&mut parts.headers, &target_uri);
-        // We don't know the final content length anymore
         parts.headers.remove(header::CONTENT_LENGTH);
 
-        // Create the streaming processor
         let body_stream = body
             .into_data_stream()
             .map(|res| res.map_err(std::io::Error::other));
         let processed_stream = TextReplacementStream::new(body_stream, proxy_url);
 
-        // Wrap it in ProxyBodyStream
         let wrapped_stream =
             processed_stream.map(|res| res.map_err(|e| ProxyError::ProcessingError(e.to_string())));
 
@@ -679,7 +709,6 @@ pub async fn proxy_request(
         ));
     }
 
-    // Standard binary stream (no replacement)
     sanitize_response_headers(&mut parts.headers, false, false, false);
     fix_content_type_header(&mut parts.headers, &target_uri);
 
@@ -839,6 +868,8 @@ impl Stream for ProxyBodyStream {
             Poll::Ready(Some(Ok(chunk))) => {
                 let chunk_len = chunk.len() as u64;
                 let new_total = this.total_bytes.saturating_add(chunk_len);
+                infra::metrics::BYTES_TRANSFERRED_TOTAL.inc_by(chunk_len);
+
                 if this.size_limit_bytes > 0 && new_total > this.size_limit_bytes {
                     let error =
                         ProxyError::SizeExceeded(new_total / 1024 / 1024, this.size_limit_mb);

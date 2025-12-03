@@ -14,6 +14,15 @@ pub static HTTP_REQUESTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     .expect("failed to register prometheus counter: gh_proxy_requests_total")
 });
 
+// 新增：带宽统计
+pub static BYTES_TRANSFERRED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    register_int_counter!(
+        "gh_proxy_bytes_transferred_total",
+        "Total bytes transferred to clients"
+    )
+    .expect("failed to register prometheus counter: gh_proxy_bytes_transferred_total")
+});
+
 pub static HTTP_ACTIVE_REQUESTS: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "gh_proxy_active_requests",

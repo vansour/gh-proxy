@@ -1,4 +1,5 @@
 use std::{fs, path::Path};
+use time::macros::format_description;
 use tracing_subscriber::fmt::time::LocalTime;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -6,13 +7,16 @@ pub fn setup_tracing(log_config: &crate::config::LogConfig) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(log_config.get_level()));
 
-    let timer = LocalTime::rfc_3339();
+    // Time format: 2025-12-03T09:50:56
+    let timer = LocalTime::new(format_description!(
+        "[year]-[month]-[day]T[hour]:[minute]:[second]"
+    ));
 
     // Console layer (always active)
     let console_layer = fmt::layer()
         .with_timer(timer.clone())
         .with_writer(std::io::stdout)
-        .with_target(false)
+        .with_target(false) // Remove target (e.g. "gh_proxy::handlers::...")
         .with_thread_ids(false)
         .with_thread_names(false);
 
@@ -51,7 +55,6 @@ pub fn setup_tracing(log_config: &crate::config::LogConfig) {
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // Leak the guard to ensure logging continues until process exit
-    // In a long-running service, this is acceptable.
     let _guard: &'static _ = Box::leak(Box::new(guard));
 
     let file_layer = fmt::layer()
@@ -60,7 +63,7 @@ pub fn setup_tracing(log_config: &crate::config::LogConfig) {
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .with_ansi(false); // Disable colors for file logs
+        .with_ansi(false);
 
     // Compose layers: Console + File
     if let Err(e) = registry.with(console_layer).with(file_layer).try_init() {

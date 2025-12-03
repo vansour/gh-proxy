@@ -20,3 +20,6 @@ default = "registry-1.docker.io"
 [cloudflare]
 zoneId = ""   # 你的 Cloudflare Zone ID
 apiToken = "" # 具有 Analytics 读取权限的 API Token
+
+[ipinfo]
+token = "" # 你的 ipinfo.io API token
