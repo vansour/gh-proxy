@@ -34,6 +34,8 @@ pub struct Settings {
     pub auth: AuthConfig,
     #[serde(default)]
     pub cloudflare: CloudflareConfig,
+    #[serde(default)]
+    pub ipinfo: IpInfoConfig,
 }
 
 impl Settings {
@@ -55,6 +57,12 @@ impl Settings {
         self.log.validate()?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct IpInfoConfig {
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -95,7 +103,6 @@ impl Default for ProxyConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct RegistryConfig {
-    /// Default upstream registry (e.g. docker.io)
     #[serde(rename = "default")]
     pub default: String,
 }
@@ -257,21 +264,6 @@ impl ServerConfig {
         if self.size_limit == 0 {
             return Err(ConfigError::Validation(
                 "server.sizeLimit must be at least 1 MB".to_string(),
-            ));
-        }
-        if self.request_timeout_secs == 0 {
-            return Err(ConfigError::Validation(
-                "server.requestTimeoutSecs must be at least 1 second".to_string(),
-            ));
-        }
-        if self.max_concurrent_requests == 0 {
-            return Err(ConfigError::Validation(
-                "server.maxConcurrentRequests must be at least 1".to_string(),
-            ));
-        }
-        if self.permit_acquire_timeout_secs == 0 {
-            return Err(ConfigError::Validation(
-                "server.permitAcquireTimeoutSecs must be at least 1".to_string(),
             ));
         }
         Ok(())
