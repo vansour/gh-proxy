@@ -1,26 +1,53 @@
 use aho_corasick::AhoCorasick;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures_util::{Stream, ready};
+use regex::bytes::Regex;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
 /// Patterns to match for GitHub URLs that need proxying
-const PATTERNS: &[&str] = &[
+const BASE_PATTERNS: &[&str] = &[
     "https://github.com",
     "http://github.com",
     "https://raw.githubusercontent.com",
     "http://raw.githubusercontent.com",
     "https://gist.github.com",
     "http://gist.github.com",
+    "https://assets-cdn.github.com",
+    "http://assets-cdn.github.com",
+    "https://avatars.githubusercontent.com",
+    "http://avatars.githubusercontent.com",
+    "https://avatars0.githubusercontent.com",
+    "http://avatars0.githubusercontent.com",
+    "https://avatars1.githubusercontent.com",
+    "http://avatars1.githubusercontent.com",
+    "https://avatars2.githubusercontent.com",
+    "http://avatars2.githubusercontent.com",
+    "https://avatars3.githubusercontent.com",
+    "http://avatars3.githubusercontent.com",
+    "https://media.githubusercontent.com",
+    "http://media.githubusercontent.com",
+    "https://codeload.github.com",
+    "http://codeload.github.com",
+    "https://objects.githubusercontent.com",
+    "http://objects.githubusercontent.com",
 ];
 
-/// Global Aho-Corasick automaton to avoid rebuilding it for every request.
-static AC_AUTOMATON: OnceLock<AhoCorasick> = OnceLock::new();
+/// Regular expression to detect generic proxy prefixes ending with '/'
+/// Matches: http(s)://domain[:port]/ at the end of the byte slice.
+static PROXY_PREFIX_REGEX: OnceLock<Regex> = OnceLock::new();
 
-fn get_automaton() -> &'static AhoCorasick {
-    AC_AUTOMATON
-        .get_or_init(|| AhoCorasick::new(PATTERNS).expect("Failed to build Aho-Corasick automaton"))
+fn get_proxy_prefix_regex() -> &'static Regex {
+    PROXY_PREFIX_REGEX.get_or_init(|| {
+        // Pattern explanation:
+        // https?://  -> Match http:// or https://
+        // [a-zA-Z0-9\.\-]+ -> Match domain (alphanumeric, dot, hyphen)
+        // (:[0-9]+)? -> Optional port
+        // / -> Must end with a slash
+        // $ -> Anchor to the end of the text
+        Regex::new(r"https?://[a-zA-Z0-9\.\-]+(:[0-9]+)?/$").expect("Invalid regex")
+    })
 }
 
 /// A stream wrapper that performs on-the-fly string injection.
@@ -28,6 +55,8 @@ pub struct TextReplacementStream<S> {
     inner: S,
     /// Efficient buffer that supports O(1) splitting from the front
     buffer: BytesMut,
+    /// The Aho-Corasick automaton for multi-pattern search
+    ac: AhoCorasick,
     /// The proxy prefix to inject (e.g., "https://ghproxy.com/")
     proxy_prefix: Arc<str>,
     /// Maximum length of any pattern (for buffer safety margin)
@@ -38,19 +67,35 @@ pub struct TextReplacementStream<S> {
 
 impl<S> TextReplacementStream<S> {
     pub fn new(inner: S, proxy_url: &str) -> Self {
-        // Ensure automaton is initialized
-        let _ = get_automaton();
+        // Ensure regex is compiled
+        let _ = get_proxy_prefix_regex();
 
-        let max_len = PATTERNS.iter().map(|p| p.len()).max().unwrap_or(0);
-
+        // Normalize proxy URL to ensure it ends with '/'
         let mut prefix = proxy_url.to_string();
         if !prefix.ends_with('/') {
             prefix.push('/');
         }
 
+        // Build patterns:
+        // 0..N: Base patterns (needs proxying)
+        // N..2N: Exclusion patterns (already proxied by US -> prefix + base)
+        // Aho-Corasick matches leftmost-longest. If the text is "https://our-proxy/https://github.com",
+        // it matches the exclusion pattern (longer) starting at 0, instead of the base pattern starting later.
+        let mut patterns = Vec::with_capacity(BASE_PATTERNS.len() * 2);
+        for &p in BASE_PATTERNS {
+            patterns.push(p.to_string());
+        }
+        for &p in BASE_PATTERNS {
+            patterns.push(format!("{}{}", prefix, p));
+        }
+
+        let ac = AhoCorasick::new(&patterns).expect("Failed to build Aho-Corasick automaton");
+        let max_len = patterns.iter().map(|p| p.len()).max().unwrap_or(0);
+
         Self {
             inner,
             buffer: BytesMut::with_capacity(8 * 1024), // Start with 8KB
+            ac,
             proxy_prefix: Arc::from(prefix),
             max_pattern_len: max_len,
             inner_done: false,
@@ -76,35 +121,63 @@ where
 
                 // Need more data to scan safely?
                 if search_limit > 0 || (self.inner_done && !self.buffer.is_empty()) {
-                    let ac = get_automaton();
                     // Check matches in the safe window
                     let input_slice = &self.buffer[..search_limit];
 
-                    if let Some(mat) = ac.find(input_slice) {
+                    if let Some(mat) = self.ac.find(input_slice) {
                         let start = mat.start();
                         let end = mat.end();
+                        let pattern_id = mat.pattern();
 
-                        // Construct output: [Pre-match] + [Prefix] + [Match]
-                        // Note: We leave [Match] (e.g., "https://github.com") in the output stream, just prefixed.
+                        // 使用 .as_usize() 将 PatternID 转换为 usize 以进行比较
+                        if pattern_id.as_usize() >= BASE_PATTERNS.len() {
+                            // Case A: Exclusion pattern found (already proxied by US).
+                            // e.g. found "https://gh-proxy.top/https://github.com"
+                            // Just output exactly what we found (prefix + url).
 
-                        // O(1) split: Take everything up to the match start
-                        let pre_match = self.buffer.split_to(start);
+                            let chunk = self.buffer.split_to(end);
+                            return Poll::Ready(Some(Ok(chunk.freeze())));
+                        } else {
+                            // Case B: Base pattern found (e.g. "https://github.com").
+                            // We need to check if it's prefixed by ANOTHER proxy (e.g. "https://gh-proxy.net/").
 
-                        // We also need to split the match itself to append it after prefix
-                        // split_to modifies `self.buffer`, so indices are relative to current head.
-                        // After split_to(start), the match is now at 0.
-                        let match_part = self.buffer.split_to(end - start);
+                            // Look back up to 256 bytes for a URL prefix
+                            let lookback_limit = 256;
+                            let check_start = start.saturating_sub(lookback_limit);
+                            let prefix_check_slice = &self.buffer[check_start..start];
 
-                        // Combine into a single Bytes object to yield
-                        // We reserve space for prefix + match part
-                        let mut chunk = BytesMut::with_capacity(
-                            pre_match.len() + self.proxy_prefix.len() + match_part.len(),
-                        );
-                        chunk.put(pre_match);
-                        chunk.put(self.proxy_prefix.as_bytes());
-                        chunk.put(match_part);
+                            let mut other_proxy_len = 0;
+                            // Regex matches http(s)://.../ at the END of the slice
+                            if let Some(m) = get_proxy_prefix_regex().find(prefix_check_slice) {
+                                // Important: the match must end exactly at the boundary of 'start'
+                                if m.end() == prefix_check_slice.len() {
+                                    other_proxy_len = m.len();
+                                }
+                            }
 
-                        return Poll::Ready(Some(Ok(chunk.freeze())));
+                            // 1. Output everything before the (potential) other proxy
+                            let pre_match_len = start - other_proxy_len;
+                            let pre_match = self.buffer.split_to(pre_match_len);
+
+                            // 2. Discard the other proxy string if it exists
+                            if other_proxy_len > 0 {
+                                let _ = self.buffer.split_to(other_proxy_len);
+                            }
+
+                            // 3. Extract the GitHub URL itself (the match)
+                            // Note: split_to consumes from front, so after previous splits, the match is at 0.
+                            let match_part = self.buffer.split_to(end - start);
+
+                            // 4. Combine: Pre-match + OUR Proxy + GitHub URL
+                            let mut chunk = BytesMut::with_capacity(
+                                pre_match.len() + self.proxy_prefix.len() + match_part.len(),
+                            );
+                            chunk.put(pre_match);
+                            chunk.put(self.proxy_prefix.as_bytes());
+                            chunk.put(match_part);
+
+                            return Poll::Ready(Some(Ok(chunk.freeze())));
+                        }
                     } else {
                         // No match found in the safe zone.
                         // We can flush the safe zone to downstream to keep memory usage low.
@@ -117,15 +190,11 @@ where
                 }
             }
 
-            if self.inner_done {
-                // If we are done and buffer is empty, we are finished.
-                if self.buffer.is_empty() {
-                    return Poll::Ready(None);
-                }
-                // If buffer not empty but search_limit was 0 (should correspond to the logic above),
-                // the `search_limit` logic handles the final flush when `inner_done` is true.
-                // So if we reach here, it implies we processed everything possible.
+            if self.inner_done && self.buffer.is_empty() {
+                return Poll::Ready(None);
             }
+            // If we reach here, buffer is not empty but search_limit is 0.
+            // This shouldn't happen if logic above is correct for inner_done=true.
 
             // 2. Read more data
             match ready!(Pin::new(&mut self.inner).poll_next(cx)) {
