@@ -8,6 +8,7 @@ use hyper::header;
 use hyper::http::uri::{Authority, PathAndQuery};
 use std::{borrow::Cow, str::FromStr};
 use tracing::{error, info, instrument, warn};
+
 #[instrument(skip_all, fields(path = %path))]
 pub async fn github_proxy(
     State(state): State<AppState>,
@@ -57,6 +58,7 @@ pub async fn github_proxy(
         }
     }
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GithubDomain {
     GithubCom,
@@ -95,6 +97,7 @@ fn detect_github_domain(path: &str) -> GithubDomain {
     }
     GithubDomain::RawUserContent
 }
+
 pub fn resolve_github_target(
     _state: &AppState,
     path: &str,
@@ -133,9 +136,7 @@ pub fn resolve_github_target(
         path_with_query.push('?');
         path_with_query.push_str(q);
     }
-    // Try parsing the path+query. If parsing fails due to characters that are
-    // valid in many real-world URLs (eg. '$' or parentheses) attempt a second
-    // parsing pass after encoding those problematic characters.
+
     let path_and_query = match PathAndQuery::from_str(&path_with_query) {
         Ok(v) => v,
         Err(_) => {
@@ -169,6 +170,7 @@ pub fn resolve_github_target(
         .build()
         .map_err(|e| ProxyError::InvalidTarget(format!("Failed to build URI: {}", e)))
 }
+
 pub fn convert_github_blob_to_raw(url: &str) -> String {
     if !url.contains("/blob/") {
         return url.to_string();
@@ -183,6 +185,7 @@ pub fn convert_github_blob_to_raw(url: &str) -> String {
     }
     url.to_string()
 }
+
 pub fn is_github_web_only_path(url: &str) -> bool {
     if url.contains("api.github.com") {
         return false;
@@ -198,6 +201,12 @@ pub fn is_github_web_only_path(url: &str) -> bool {
     {
         return false;
     }
+
+    // Explicit check for paths ending with /releases or /tags (without trailing slash)
+    if url.ends_with("/releases") || url.ends_with("/tags") {
+        return true;
+    }
+
     let web_only_patterns = [
         "/pkgs/",
         "/releases/",
@@ -224,6 +233,7 @@ pub fn is_github_web_only_path(url: &str) -> bool {
     }
     false
 }
+
 pub fn is_github_repo_homepage(url: &str) -> bool {
     if url.contains("api.github.com") {
         return false;
