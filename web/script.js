@@ -14,9 +14,6 @@
         copyIcon: document.getElementById('copyIcon'),
         openBtn: document.getElementById('openBtn'),
         toast: document.getElementById('toast'),
-        historySection: document.getElementById('historySection'),
-        historyList: document.getElementById('historyList'),
-        clearHistoryBtn: document.getElementById('clearHistoryBtn'),
         // Stats
         statsContainer: document.getElementById('statsContainer'),
         cfTotalBytes: document.getElementById('cfTotalBytes'),
@@ -31,8 +28,7 @@
     };
 
     const STATE = {
-        format: 'direct',
-        history: JSON.parse(localStorage.getItem('gh_proxy_history') || '[]')
+        format: 'direct'
     };
 
     const CONFIG = {
@@ -48,7 +44,6 @@
         }
 
         bindEvents();
-        renderHistory();
         fetchData();
         setInterval(fetchStats, 15000);
     }
@@ -100,12 +95,6 @@
         EL.openBtn.addEventListener('click', () => {
             const text = EL.outputContent.textContent;
             if (/^https?:\/\//.test(text)) window.open(text, '_blank');
-        });
-
-        EL.clearHistoryBtn.addEventListener('click', () => {
-            STATE.history = [];
-            saveHistory();
-            renderHistory();
         });
     }
 
@@ -159,7 +148,6 @@
         }
 
         showOutput(result, isUrl);
-        addToHistory(rawUrl);
     }
 
     function showOutput(text, isUrl) {
@@ -173,32 +161,6 @@
         EL.errorMsg.textContent = msg;
         EL.errorMsg.classList.add('visible');
         EL.outputCard.style.display = 'none';
-    }
-
-    function addToHistory(url) {
-        STATE.history = STATE.history.filter(item => item !== url);
-        STATE.history.unshift(url);
-        if (STATE.history.length > 5) STATE.history.pop();
-        saveHistory();
-        renderHistory();
-    }
-
-    function saveHistory() {
-        localStorage.setItem('gh_proxy_history', JSON.stringify(STATE.history));
-    }
-
-    function renderHistory() {
-        if (STATE.history.length === 0) {
-            EL.historySection.style.display = 'none';
-            return;
-        }
-        EL.historySection.style.display = 'block';
-        EL.historyList.innerHTML = STATE.history.map(url => `
-            <div class="history-item" onclick="document.getElementById('inputUrl').value='${url}'; document.getElementById('inputUrl').dispatchEvent(new Event('input')); document.getElementById('generateBtn').click();">
-                <span class="history-icon">🕒</span>
-                <span class="history-text">${url}</span>
-            </div>
-        `).join('');
     }
 
     async function copyToClipboard(text) {

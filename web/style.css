@@ -276,7 +276,8 @@ body {
 .output-content {
     font-family: "JetBrains Mono", "Fira Code", monospace;
     word-break: break-all;
-    padding-right: 60px;
+    /* 修复：增加右侧内边距，防止与按钮重叠。按钮宽40*2+间距12+右距24=116，预留140px */
+    padding-right: 140px;
     font-size: 16px;
     line-height: 1.6;
     font-weight: 500;
@@ -290,65 +291,30 @@ body {
     gap: 12px;
 }
 
-/* 历史记录 */
-.history-section {
-    margin-top: var(--spacing-lg);
+/* 测速链接样式 */
+.speed-test-section {
+    text-align: center;
+    margin: 20px 0;
 }
 
-.history-title {
-    font-size: 16px;
-    color: var(--on-surface-variant);
-    margin-bottom: 12px;
-    display: flex;
-    justify-content: space-between;
+.speed-test-link {
+    display: inline-flex;
     align-items: center;
-    font-weight: 600;
-}
-
-.clear-history {
-    background: none;
-    border: none;
-    color: var(--primary);
-    font-size: 14px;
-    cursor: pointer;
-    font-weight: 500;
-}
-
-.history-list {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.history-item {
-    display: flex;
-    align-items: center;
-    padding: 16px;
-    background: var(--surface);
-    border: 1px solid var(--surface-variant);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 14px;
+    gap: 8px;
+    padding: 10px 20px;
+    background-color: var(--surface-variant);
     color: var(--on-surface);
+    text-decoration: none;
+    border-radius: 50px;
+    font-size: 14px;
+    font-weight: 600;
     transition: all 0.2s;
 }
 
-.history-item:hover {
-    background: var(--surface-variant);
-    transform: translateX(4px);
-}
-
-.history-icon {
-    margin-right: 12px;
-    opacity: 0.7;
-}
-
-.history-text {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: monospace;
+.speed-test-link:hover {
+    background-color: var(--outline);
+    color: var(--on-primary);
+    transform: translateY(-2px);
 }
 
 /* 统计数据 */
