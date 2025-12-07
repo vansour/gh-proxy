@@ -1,472 +1,287 @@
-// 使用IIFE（立即执行函数表达式）创建私有作用域，避免全局变量污染
-(function() {
+(function () {
     'use strict';
 
-    // ============ DOM 元素缓存 ============
-    const DOM = {
-        form: document.getElementById('github-form'),
-        input: document.getElementById('githubLinkInput'),
-        output: document.getElementById('formattedLinkOutput'),
-        outputArea: document.getElementById('output'),
-        copyButton: document.getElementById('copyButton'),
-        openButton: document.getElementById('openButton'),
+    const EL = {
+        input: document.getElementById('inputUrl'),
+        clearBtn: document.getElementById('clearBtn'),
+        pasteBtn: document.getElementById('pasteBtn'),
+        errorMsg: document.getElementById('errorMsg'),
+        generateBtn: document.getElementById('generateBtn'),
+        formatBtns: document.querySelectorAll('.format-btn'),
+        outputCard: document.getElementById('outputCard'),
+        outputContent: document.getElementById('outputContent'),
+        copyBtn: document.getElementById('copyBtn'),
+        copyIcon: document.getElementById('copyIcon'),
+        openBtn: document.getElementById('openBtn'),
         toast: document.getElementById('toast'),
-        error: document.getElementById('githubLinkError'),
-        formatToggle: document.getElementById('format-toggle'),
-        slider: document.querySelector('.segmented-control__slider'),
-        clearButton: document.getElementById('clearInputButton'),
-        versionBadge: document.getElementById('versionBadge'),
+        historySection: document.getElementById('historySection'),
+        historyList: document.getElementById('historyList'),
+        clearHistoryBtn: document.getElementById('clearHistoryBtn'),
+        // Stats
+        statsContainer: document.getElementById('statsContainer'),
+        cfTotalBytes: document.getElementById('cfTotalBytes'),
+        cfCachedBytes: document.getElementById('cfCachedBytes'),
+        cfCachedBytesPct: document.getElementById('cfCachedBytesPct'),
+        cfBytesBar: document.getElementById('cfBytesBar'),
+        cfTotalReqs: document.getElementById('cfTotalReqs'),
+        cfCachedReqs: document.getElementById('cfCachedReqs'),
+        cfCachedReqsPct: document.getElementById('cfCachedReqsPct'),
+        cfReqsBar: document.getElementById('cfReqsBar'),
+        versionBadge: document.getElementById('versionBadge')
     };
 
-    // ============ 常量配置 ============
+    const STATE = {
+        format: 'direct',
+        history: JSON.parse(localStorage.getItem('gh_proxy_history') || '[]')
+    };
+
     const CONFIG = {
-        TOAST_DURATION: 3000,
         API_CONFIG: '/api/config',
-        API_HEALTH: '/healthz',
-        DEBOUNCE_DELAY: 300,
-        THROTTLE_DELAY: 16, // ~60fps
+        API_STATS: '/api/stats',
+        API_HEALTH: '/healthz'
     };
 
-    // ============ 高阶函数 ============
-    /**
-     * 防抖函数：延迟执行，如果在延迟期间再次调用，则重新计时
-     * 适用于：输入框输入、窗口调整大小、搜索建议等
-     * @param {Function} func - 要执行的函数
-     * @param {number} delay - 延迟毫秒数
-     * @returns {Function} - 防抖后的函数
-     */
-    function debounce(func, delay) {
-        let timeoutId;
-        return function debounced(...args) {
-            clearTimeout(timeoutId);
-            timeoutId = setTimeout(() => func.apply(this, args), delay);
-        };
-    }
-
-    /**
-     * 节流函数：在指定时间间隔内最多执行一次
-     * 适用于：resize、scroll、mousemove 等高频事件
-     * @param {Function} func - 要执行的函数
-     * @param {number} delay - 时间间隔毫秒数
-     * @returns {Function} - 节流后的函数
-     */
-    function throttle(func, delay) {
-        let lastTime = 0;
-        return function throttled(...args) {
-            const now = Date.now();
-            if (now - lastTime >= delay) {
-                func.apply(this, args);
-                lastTime = now;
-            }
-        };
-    }
-
-    // ============ Toast 管理系统 ============
-    const ToastManager = {
-        queue: [],
-        isShowing: false,
-        lastMessage: null,
-        lastTime: 0,
-        timeoutId: null,
-
-        /**
-         * 显示 Toast 消息（带去重功能）
-         * @param {string} message - 提示消息
-         * @param {number} minInterval - 相同消息的最小显示间隔（ms）
-         */
-        show(message, minInterval = 1000) {
-            const now = Date.now();
-            
-            // 去重：相同消息且在最小间隔内不重复显示
-            if (message === this.lastMessage && now - this.lastTime < minInterval) {
-                return;
-            }
-
-            this.queue.push(message);
-            this.lastMessage = message;
-            this.lastTime = now;
-
-            if (!this.isShowing) {
-                this.processQueue();
-            }
-        },
-
-        /**
-         * 处理 Toast 队列
-         */
-        processQueue() {
-            if (this.queue.length === 0) {
-                this.isShowing = false;
-                return;
-            }
-
-            this.isShowing = true;
-            const message = this.queue.shift();
-            this.display(message);
-        },
-
-        /**
-         * 显示单个 Toast
-         */
-        display(message) {
-            const toastMessage = DOM.toast.querySelector('#toastMessage');
-            toastMessage.textContent = message;
-            DOM.toast.classList.add('toast--visible');
-
-            // 清除之前的计时器
-            if (this.timeoutId) {
-                clearTimeout(this.timeoutId);
-            }
-
-            // 设置新的计时器
-            this.timeoutId = setTimeout(() => {
-                DOM.toast.classList.remove('toast--visible');
-                // 继续处理队列中的下一个消息
-                this.processQueue();
-            }, CONFIG.TOAST_DURATION);
-        },
-
-        /**
-         * 清空队列
-         */
-        clear() {
-            this.queue = [];
-            this.isShowing = false;
-            if (this.timeoutId) {
-                clearTimeout(this.timeoutId);
-            }
-            DOM.toast.classList.remove('toast--visible');
+    function init() {
+        EL.input.focus();
+        if (navigator.clipboard && navigator.clipboard.readText) {
+            EL.pasteBtn.style.display = 'flex';
         }
-    };
 
-    /**
-     * 显示吐司提示（使用 ToastManager）
-     * @param {string} message - 提示消息
-     */
-    function showToast(message) {
-        ToastManager.show(message);
+        bindEvents();
+        renderHistory();
+        fetchData();
+        setInterval(fetchStats, 15000);
     }
 
-    /**
-     * 更新清除按钮的可见性
-     */
-    function updateClearButtonVisibility() {
-        const hasInput = DOM.input.value.trim().length > 0;
-        DOM.clearButton.classList.toggle('visible', hasInput);
+    function bindEvents() {
+        EL.formatBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                EL.formatBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                STATE.format = btn.dataset.format;
+                if (EL.input.value.trim()) processInput();
+            });
+        });
+
+        EL.input.addEventListener('input', () => {
+            const hasVal = !!EL.input.value.trim();
+            EL.clearBtn.style.display = hasVal ? 'flex' : 'none';
+            EL.pasteBtn.style.display = hasVal ? 'none' : 'flex';
+            EL.errorMsg.classList.remove('visible');
+        });
+
+        EL.input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') processInput();
+        });
+
+        EL.clearBtn.addEventListener('click', () => {
+            EL.input.value = '';
+            EL.input.focus();
+            EL.outputCard.style.display = 'none';
+            EL.clearBtn.style.display = 'none';
+            EL.pasteBtn.style.display = 'flex';
+        });
+
+        EL.pasteBtn.addEventListener('click', async () => {
+            try {
+                const text = await navigator.clipboard.readText();
+                EL.input.value = text;
+                EL.input.dispatchEvent(new Event('input'));
+                processInput();
+            } catch (err) {
+                showToast('无法读取剪贴板');
+            }
+        });
+
+        EL.generateBtn.addEventListener('click', processInput);
+
+        EL.copyBtn.addEventListener('click', () => copyToClipboard(EL.outputContent.textContent));
+
+        EL.openBtn.addEventListener('click', () => {
+            const text = EL.outputContent.textContent;
+            if (/^https?:\/\//.test(text)) window.open(text, '_blank');
+        });
+
+        EL.clearHistoryBtn.addEventListener('click', () => {
+            STATE.history = [];
+            saveHistory();
+            renderHistory();
+        });
     }
 
-    /**
-     * 生成输出链接
-     * @param {string} userInput - 用户输入的URL
-     * @param {string} format - 输出格式
-     * @returns {object} - { link, isUrl } 或 { error }
-     */
-    function generateOutput(userInput, format) {
+    function processInput() {
+        let rawUrl = EL.input.value.trim();
+        if (!rawUrl) return showError('请输入链接');
+
+        // 尝试移除已存在的代理前缀
+        const proxyPrefixRegex = /^(https?:\/\/[^\/]+\/)(https?:\/\/.*)/i;
+        const match = rawUrl.match(proxyPrefixRegex);
+        if (match) {
+            rawUrl = match[2];
+        }
+
+        const isDocker = STATE.format === 'docker';
+        if (!isDocker && !/^https?:\/\//i.test(rawUrl) && !/^github\.com/i.test(rawUrl)) {
+            if (/^github\.com/.test(rawUrl)) {
+                EL.input.value = 'https://' + rawUrl;
+                return processInput();
+            }
+            return showError('无效的 URL 格式');
+        }
+
         const baseUrl = window.location.origin;
-        let normalizedLink = userInput.trim();
+        let result = '';
+        let isUrl = true;
 
         try {
-            if (!/^https?:\/\//i.test(normalizedLink)) {
-                normalizedLink = 'https://' + normalizedLink;
-            }
+            if (isDocker) {
+                if (!isValidDockerRef(rawUrl)) return showError('无效的 Docker 镜像格式');
+                result = `docker pull ${window.location.host}/${rawUrl}`;
+                isUrl = false;
+            } else {
+                let urlObj = new URL(rawUrl.startsWith('http') ? rawUrl : 'https://' + rawUrl);
+                const proxyPath = urlObj.hostname + urlObj.pathname + urlObj.search + urlObj.hash;
+                const directLink = `${baseUrl}/${proxyPath}`;
 
-            const url = new URL(normalizedLink);
-            const proxyPath = url.hostname + url.pathname + url.search + url.hash;
-            const directLink = `${baseUrl}/${proxyPath}`;
-
-            switch (format) {
-                case 'git':
-                    if (url.pathname.endsWith('.git')) {
-                        return { link: `git clone ${directLink}`, isUrl: false };
-                    }
-                    return { error: 'Git Clone 需要以 .git 结尾的仓库链接' };
-                case 'wget':
-                    return { link: `wget "${directLink}"`, isUrl: false };
-                case 'curl':
-                    return { link: `curl -O "${directLink}"`, isUrl: false };
-                case 'docker': {
-                    // Only accept Docker image references (e.g. alpine, nginx:latest, registry.example.com/namespace/image:tag, image@sha256:...)
-                    const spec = userInput.trim();
-                    if (!isValidDockerRef(spec)) {
-                        return { error: '请输入有效的 Docker 镜像标识（例如：alpine 或 registry.example.com/namespace/image:tag）' };
-                    }
-                    // Generate a `docker pull` that points at the proxy host; users can replace with their registry as needed
-                    return { link: `docker pull ${window.location.origin}/${spec}`, isUrl: false };
+                switch (STATE.format) {
+                    case 'git':
+                        if (!urlObj.pathname.endsWith('.git')) return showError('Git Clone 需要 .git 结尾');
+                        result = `git clone ${directLink}`;
+                        isUrl = false;
+                        break;
+                    case 'wget': result = `wget "${directLink}"`; isUrl = false; break;
+                    case 'curl': result = `curl -O "${directLink}"`; isUrl = false; break;
+                    default: result = directLink;
                 }
-                case 'direct':
-                default:
-                    return { link: directLink, isUrl: true };
             }
         } catch (e) {
-            return { error: '请输入一个有效的 URL' };
+            return showError('解析错误，请检查链接');
         }
+
+        showOutput(result, isUrl);
+        addToHistory(rawUrl);
     }
 
-    /**
-     * 处理表单提交
-     */
-    function handleFormAction() {
-        DOM.error.textContent = '';
-        DOM.error.classList.remove('text-field__error--visible');
+    function showOutput(text, isUrl) {
+        EL.errorMsg.classList.remove('visible');
+        EL.outputCard.style.display = 'block';
+        EL.outputContent.textContent = text;
+        EL.openBtn.style.display = isUrl ? 'flex' : 'none';
+    }
 
-        const githubLink = DOM.input.value.trim();
-        const selectedFormat = DOM.formatToggle.querySelector('.active').dataset.value;
+    function showError(msg) {
+        EL.errorMsg.textContent = msg;
+        EL.errorMsg.classList.add('visible');
+        EL.outputCard.style.display = 'none';
+    }
 
-        if (!githubLink) {
-            DOM.error.textContent = '请输入Github链接';
-            DOM.error.classList.add('text-field__error--visible');
+    function addToHistory(url) {
+        STATE.history = STATE.history.filter(item => item !== url);
+        STATE.history.unshift(url);
+        if (STATE.history.length > 5) STATE.history.pop();
+        saveHistory();
+        renderHistory();
+    }
+
+    function saveHistory() {
+        localStorage.setItem('gh_proxy_history', JSON.stringify(STATE.history));
+    }
+
+    function renderHistory() {
+        if (STATE.history.length === 0) {
+            EL.historySection.style.display = 'none';
             return;
         }
-
-        const result = generateOutput(githubLink, selectedFormat);
-
-        if (result.error) {
-            DOM.error.textContent = result.error;
-            DOM.error.classList.add('text-field__error--visible');
-            DOM.outputArea.style.display = 'none';
-            // No docker preview — only show the docker pull command when docker selected
-        } else {
-            DOM.output.textContent = result.link;
-            DOM.outputArea.style.display = 'flex';
-            DOM.openButton.disabled = !result.isUrl;
-            // Only show the docker preview button when format == docker
-            // nothing for preview
-        }
+        EL.historySection.style.display = 'block';
+        EL.historyList.innerHTML = STATE.history.map(url => `
+            <div class="history-item" onclick="document.getElementById('inputUrl').value='${url}'; document.getElementById('inputUrl').dispatchEvent(new Event('input')); document.getElementById('generateBtn').click();">
+                <span class="history-icon">🕒</span>
+                <span class="history-text">${url}</span>
+            </div>
+        `).join('');
     }
 
-    /**
-     * 更新滑块位置
-     */
-    function updateSliderPosition() {
-        const activeButton = DOM.formatToggle.querySelector('.active');
-        if (activeButton) {
-            const rect = activeButton.getBoundingClientRect();
-            const containerRect = DOM.formatToggle.getBoundingClientRect();
-            // translateX must account for horizontal scroll in the segmented control
-            const offsetInside = rect.left - containerRect.left + DOM.formatToggle.scrollLeft;
-            DOM.slider.style.width = `${rect.width}px`;
-            DOM.slider.style.transform = `translateX(${offsetInside}px)`;
-        }
-    }
-
-    /**
-     * 初始化滑块和响应式观察
-     */
-    function initSlider() {
-        updateSliderPosition();
-        // 使用节流优化 ResizeObserver 回调频率
-        const throttledUpdateSlider = throttle(updateSliderPosition, CONFIG.THROTTLE_DELAY);
-        const resizeObserver = new ResizeObserver(throttledUpdateSlider);
-        resizeObserver.observe(DOM.formatToggle);
-        // 观察各个按钮的大小变化（例如语言或字体变化导致文字换行）
-        Array.from(DOM.formatToggle.querySelectorAll('button')).forEach((btn) => resizeObserver.observe(btn));
-        // 当用户在小屏幕上水平滚动选项时，也需要移动滑块
-        DOM.formatToggle.addEventListener('scroll', throttledUpdateSlider);
-    }
-
-    /**
-     * 使用 execCommand 复制文本（降级方案）
-     * @param {string} text - 要复制的文本
-     */
-    function copyViaExecCommand(text) {
-        const textarea = document.createElement('textarea');
-        Object.assign(textarea.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '2em',
-            height: '2em',
-            padding: '0',
-            border: 'none',
-            outline: 'none',
-            boxShadow: 'none',
-            background: 'transparent',
-            opacity: '0',
-            pointerEvents: 'none',
-            zIndex: '-9999',
-            fontSize: '16px',
-            lineHeight: '1',
-        });
-
-        textarea.value = text;
-        document.body.appendChild(textarea);
-        textarea.focus();
-
+    async function copyToClipboard(text) {
         try {
-            textarea.setSelectionRange(0, textarea.value.length);
-            const successful = document.execCommand('copy');
-
-            if (successful) {
-                showToast('已复制到剪贴板');
+            if (navigator.clipboard) {
+                await navigator.clipboard.writeText(text);
             } else {
-                console.warn('execCommand 返回 false，尝试备用方案');
-                textarea.select();
-                const retrySuccessful = document.execCommand('copy');
-                showToast(retrySuccessful ? '已复制到剪贴板' : '复制失败');
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
             }
+            showToast('已复制');
+            const originalSvg = EL.copyBtn.innerHTML;
+            EL.copyBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#4caf50"/></svg>';
+            setTimeout(() => EL.copyBtn.innerHTML = originalSvg, 1500);
         } catch (err) {
-            console.error('复制错误:', err);
-            showToast('复制失败，请手动复制');
-        } finally {
-            if (textarea.parentNode) {
-                document.body.removeChild(textarea);
-            }
+            showToast('复制失败');
         }
     }
 
-    /**
-     * 复制链接到剪贴板
-     */
-    function copyToClipboard() {
-        const textToCopy = DOM.output.textContent;
-        if (!textToCopy) return;
-
-        if (navigator.clipboard?.writeText) {
-            navigator.clipboard.writeText(textToCopy)
-                .then(() => showToast('已复制到剪贴板'))
-                .catch(() => copyViaExecCommand(textToCopy));
-        } else {
-            copyViaExecCommand(textToCopy);
-        }
+    function showToast(msg) {
+        EL.toast.textContent = msg;
+        EL.toast.classList.add('show');
+        setTimeout(() => EL.toast.classList.remove('show'), 2000);
     }
 
-    /**
-     * 在新标签页打开链接
-     */
-    function openInNewTab() {
-        if (!DOM.openButton.disabled) {
-            window.open(DOM.output.textContent, '_blank');
-        }
+    function isValidDockerRef(s) {
+        if (!s || /\s/.test(s) || /^https?:\/\//i.test(s)) return false;
+        const digestRe = /^(?:[^\/@]+(?:\/[\w.-]+)*)@sha256:[0-9a-fA-F]{64}$/;
+        const tagRe = /^(?:[a-zA-Z0-9.-]+(?::[0-9]+)?\/)??(?:[\w.-]+\/?)*[\w.-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?$/;
+        return digestRe.test(s) || tagRe.test(s);
     }
 
-    /**
-     * 获取配置数据并更新UI
-     */
-    async function fetchConfigData() {
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    function updateStatBar(totalEl, cachedEl, pctEl, barEl, total, cached, formatter = n => n.toLocaleString()) {
+        totalEl.textContent = formatter(total);
+        cachedEl.textContent = formatter(cached);
+        let pct = 0;
+        if (total > 0) pct = Math.round((cached / total) * 100);
+        pctEl.textContent = `${pct}%`;
+        barEl.style.width = `${pct}%`;
+    }
+
+    async function fetchStats() {
         try {
-            const response = await fetch(CONFIG.API_CONFIG);
-            if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-            const config = await response.json();
-
-            const updates = {
-                'sizeLimitDisplay': config.server ? `${config.server.sizeLimit} MB` : '无法获取',
-                'shellNestStatus': config.shell ? (config.shell.editor ? '已开启' : '已关闭') : '无法获取',
-            };
-
-            Object.entries(updates).forEach(([id, text]) => {
-                const element = document.getElementById(id);
-                if (element) element.textContent = text;
-            });
-        } catch (error) {
-            console.error('Error fetching config:', error);
-            ['sizeLimitDisplay', 'shellNestStatus'].forEach(id => {
-                const element = document.getElementById(id);
-                if (element) element.textContent = '无法获取';
-            });
+            const res = await fetch(CONFIG.API_STATS);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.cloudflare) {
+                    EL.statsContainer.classList.remove('hidden');
+                    updateStatBar(
+                        EL.cfTotalBytes, EL.cfCachedBytes, EL.cfCachedBytesPct, EL.cfBytesBar,
+                        data.cloudflare.bytes, data.cloudflare.cached_bytes, formatBytes
+                    );
+                    updateStatBar(
+                        EL.cfTotalReqs, EL.cfCachedReqs, EL.cfCachedReqsPct, EL.cfReqsBar,
+                        data.cloudflare.requests, data.cloudflare.cached_requests
+                    );
+                }
+            }
+        } catch (e) {
+            console.warn('Stats fetch failed', e);
         }
     }
 
-    /**
-     * 获取版本信息并更新右下角角标
-     */
-    async function fetchHealthVersion() {
-        if (!DOM.versionBadge) return;
+    async function fetchData() {
         try {
-            const resp = await fetch(CONFIG.API_HEALTH, { cache: 'no-store' });
-            if (!resp.ok) throw new Error(`status ${resp.status}`);
-            const data = await resp.json();
-            if (data?.version) {
-                const ver = String(data.version).startsWith('v') ? data.version : `v${data.version}`;
-                DOM.versionBadge.textContent = ver;
-                DOM.versionBadge.title = `版本 ${ver}`;
-            } else {
-                throw new Error('No version in response');
-            }
-        } catch (err) {
-            console.warn('无法获取 /healthz 版本信息:', err);
-            DOM.versionBadge.textContent = 'v?';
-            DOM.versionBadge.title = '版本：获取失败';
-        }
+            fetch(CONFIG.API_HEALTH).then(res => res.json()).then(h => {
+                if (h.version) EL.versionBadge.textContent = `v${h.version}`;
+            }).catch(() => { });
+            fetchStats();
+        } catch (e) { }
     }
 
-    // ============ 事件监听器 ============
-    function setupEventListeners() {
-        DOM.form.addEventListener('submit', (e) => {
-            e.preventDefault();
-            handleFormAction();
-        });
-
-        DOM.clearButton.addEventListener('click', (e) => {
-            e.preventDefault();
-            DOM.input.value = '';
-            updateClearButtonVisibility();
-            DOM.error.textContent = '';
-            DOM.error.classList.remove('text-field__error--visible');
-            DOM.outputArea.style.display = 'none';
-            DOM.input.focus();
-        });
-
-        DOM.formatToggle.addEventListener('click', (e) => {
-            const button = e.target.closest('button');
-            if (!button || button.classList.contains('active')) return;
-            DOM.formatToggle.querySelector('.active')?.classList.remove('active');
-            button.classList.add('active');
-            updateSliderPosition();
-            // 如果控件可横向滚动，确保被点击的选项可见（居中）
-            if (DOM.formatToggle.scrollWidth > DOM.formatToggle.clientWidth) {
-                button.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-            }
-            if (DOM.input.value.trim()) {
-                handleFormAction();
-            }
-        });
-
-        // 使用防抖处理输入事件，避免频繁触发
-        const debouncedInputHandler = debounce(() => {
-            DOM.error.textContent = '';
-            DOM.error.classList.remove('text-field__error--visible');
-            updateClearButtonVisibility();
-        }, CONFIG.DEBOUNCE_DELAY);
-
-        DOM.input.addEventListener('input', debouncedInputHandler);
-
-        // 使用节流处理窗口调整大小时的滑块位置更新
-        const throttledSliderUpdate = throttle(updateSliderPosition, CONFIG.THROTTLE_DELAY);
-        window.addEventListener('resize', throttledSliderUpdate);
-
-        DOM.copyButton.addEventListener('click', copyToClipboard);
-        DOM.openButton.addEventListener('click', openInNewTab);
-        // no docker preview action
-
-        // ----------------------
-        // Docker image validation
-        // ----------------------
-        function isValidDockerRef(s) {
-            if (!s || s.trim().length === 0) return false;
-            if (/\s/.test(s)) return false;
-            // Reject http URLs
-            if (/^https?:\/\//i.test(s)) return false;
-            // digest form: name@sha256:<64 hex>
-            const digestRe = /^(?:[^\/@]+(?:\/[\w.-]+)*)@sha256:[0-9a-fA-F]{64}$/;
-            // basic name/tag form: [registry/][namespace/]name[:tag]
-            const tagRe = /^(?:[a-zA-Z0-9.-]+(?::[0-9]+)?\/)??(?:[\w.-]+\/?)*[\w.-]+(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?$/;
-            return digestRe.test(s) || tagRe.test(s);
-        }
-    }
-
-    // ============ 初始化 ============
-    function init() {
-        setupEventListeners();
-        fetchConfigData();
-        initSlider();
-        updateClearButtonVisibility();
-        fetchHealthVersion();
-    }
-
-    // 页面加载完成后初始化
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
+    init();
 })();
