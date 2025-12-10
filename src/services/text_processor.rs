@@ -94,7 +94,7 @@ impl<S> TextReplacementStream<S> {
 
         Self {
             inner,
-            buffer: BytesMut::with_capacity(8 * 1024), // Start with 8KB
+            buffer: BytesMut::with_capacity(16 * 1024), // 16KB initial buffer for better performance
             ac,
             proxy_prefix: Arc::from(prefix),
             max_pattern_len: max_len,

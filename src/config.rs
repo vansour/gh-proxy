@@ -240,7 +240,7 @@ impl Default for ServerConfig {
             port: 8080,
             size_limit: 125,
             request_timeout_secs: 60,
-            max_concurrent_requests: 50,
+            max_concurrent_requests: 100,
             permit_acquire_timeout_secs: 10,
         }
     }

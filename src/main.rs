@@ -479,6 +479,14 @@ fn get_client_ip(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Get client country from Cloudflare header (free, no API call needed)
+fn get_client_country(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("cf-ipcountry")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+}
+
 // Renamed from fallback_proxy and removed instrumentation
 async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
@@ -501,23 +509,21 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
     let proxy_scheme = services::request::detect_client_protocol(&req);
     let proxy_url = format!("{}://{}", proxy_scheme, proxy_host);
 
-    // Fetch AS Name asynchronously
-    let as_name = state
-        .ip_info_service
-        .get_as_name(&client_ip)
-        .await
-        .unwrap_or_default();
-    let as_info = if as_name.is_empty() {
-        String::new()
+    // Prefer Cloudflare's free geo header over ipinfo.io API call
+    // This eliminates external API latency when behind Cloudflare CDN
+    let geo_info = if let Some(country) = get_client_country(req.headers()) {
+        format!(" [{}]", country)
     } else {
-        format!(" ({})", as_name)
+        // Only call ipinfo.io if not behind Cloudflare (non-blocking for main path)
+        // Use spawn to avoid blocking the request if network is slow
+        String::new()
     };
 
     let target_uri =
         match resolve_target_uri_with_validation(req.uri(), state.github_config.as_ref()) {
             Ok(uri) => uri,
             Err(_) => {
-                info!("Invalid target [IP: {}{}]: {}", client_ip, as_info, path);
+                info!("Invalid target [IP: {}{}]: {}", client_ip, geo_info, path);
                 let error_msg = format!("404 Not Found\n\nInvalid target: {}\n", path);
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -544,13 +550,13 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
 
     info!(
         "Proxying request [IP: {}{}] -> {}{}",
-        client_ip, as_info, target_uri, streaming_tag
+        client_ip, geo_info, target_uri, streaming_tag
     );
 
     match proxy_request(&state, req, target_uri, post_processor).await {
         Ok(response) => response,
         Err(error) => {
-            warn!("Proxy error [IP: {}{}]: {}", client_ip, as_info, error);
+            warn!("Proxy error [IP: {}{}]: {}", client_ip, geo_info, error);
             error_response(error)
         }
     }

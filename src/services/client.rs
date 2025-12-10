@@ -30,6 +30,9 @@ pub fn build_client(
         .pool_idle_timeout(Duration::from_secs(90))
         // 2. 针对特定主机的最大空闲连接数。
         // 因为我们主要访问 github.com，这里设置大一点可以复用更多连接。
-        .pool_max_idle_per_host(32)
+        .pool_max_idle_per_host(128)
+        // 3. HTTP/2 窗口大小优化，加速大文件传输
+        .http2_initial_stream_window_size(1024 * 1024) // 1MB 初始流窗口
+        .http2_initial_connection_window_size(4 * 1024 * 1024) // 4MB 初始连接窗口
         .build(connector)
 }
