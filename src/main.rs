@@ -78,11 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Cloudflare analytics integration enabled");
     }
 
-    let ip_info_service = Arc::new(services::ipinfo::IpInfoService::new(
-        client.clone(),
-        settings.ipinfo.token.clone(),
-    ));
-
     // Create docker proxy with client clone before moving client
     let docker_proxy = Some(Arc::new(providers::registry::DockerProxy::new(
         client.clone(),
@@ -103,7 +98,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         docker_proxy,
         download_semaphore,
         cloudflare_service,
-        ip_info_service,
         rate_limiter,
     };
 

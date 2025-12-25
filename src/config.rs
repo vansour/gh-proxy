@@ -34,8 +34,6 @@ pub struct Settings {
     pub auth: AuthConfig,
     #[serde(default)]
     pub cloudflare: CloudflareConfig,
-    #[serde(default)]
-    pub ipinfo: IpInfoConfig,
 }
 
 impl Settings {
@@ -57,12 +55,6 @@ impl Settings {
         self.log.validate()?;
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct IpInfoConfig {
-    pub token: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
