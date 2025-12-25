@@ -84,6 +84,46 @@ impl GithubDomain {
     }
 }
 
+/// Convert GitHub raw paths from new format to the format supported by raw.githubusercontent.com.
+///
+/// GitHub now supports URLs like:
+/// - github.com/owner/repo/raw/refs/heads/branch/path/to/file
+/// - github.com/owner/repo/raw/refs/tags/tag/path/to/file
+///
+/// But raw.githubusercontent.com expects:
+/// - raw.githubusercontent.com/owner/repo/branch/path/to/file
+/// - raw.githubusercontent.com/owner/repo/tag/path/to/file
+fn normalize_github_raw_path(path: &str) -> std::borrow::Cow<'_, str> {
+    // Patterns to normalize:
+    // /raw/refs/heads/<branch>/... -> /<branch>/...
+    // /raw/refs/tags/<tag>/... -> /<tag>/...
+    // /raw/<branch>/... -> /<branch>/... (already correct for raw.githubusercontent.com)
+
+    if let Some(idx) = path.find("/raw/refs/heads/") {
+        let before = &path[..idx];
+        let after = &path[idx + "/raw/refs/heads/".len()..];
+        return std::borrow::Cow::Owned(format!("{}/{}", before, after));
+    }
+
+    if let Some(idx) = path.find("/raw/refs/tags/") {
+        let before = &path[..idx];
+        let after = &path[idx + "/raw/refs/tags/".len()..];
+        return std::borrow::Cow::Owned(format!("{}/{}", before, after));
+    }
+
+    // Handle /raw/<branch>/... format - remove the /raw/ prefix
+    if let Some(idx) = path.find("/raw/") {
+        // Make sure it's not already processed (not /refs/)
+        let after_raw = &path[idx + "/raw/".len()..];
+        if !after_raw.starts_with("refs/") {
+            let before = &path[..idx];
+            return std::borrow::Cow::Owned(format!("{}/{}", before, after_raw));
+        }
+    }
+
+    std::borrow::Cow::Borrowed(path)
+}
+
 fn detect_github_domain(path: &str) -> GithubDomain {
     if path.contains("/releases/download/") {
         return GithubDomain::GithubCom;
@@ -127,11 +167,20 @@ pub fn resolve_github_target(
         ));
     }
     let domain = detect_github_domain(path);
+
+    // Normalize raw paths for raw.githubusercontent.com
+    let normalized_path = if domain == GithubDomain::RawUserContent {
+        normalize_github_raw_path(path)
+    } else {
+        std::borrow::Cow::Borrowed(path)
+    };
+
     let query_str = query.as_deref();
-    let mut path_with_query =
-        String::with_capacity(1 + path.len() + query_str.map(|q| 1 + q.len()).unwrap_or(0));
+    let mut path_with_query = String::with_capacity(
+        1 + normalized_path.len() + query_str.map(|q| 1 + q.len()).unwrap_or(0),
+    );
     path_with_query.push('/');
-    path_with_query.push_str(path);
+    path_with_query.push_str(&normalized_path);
     if let Some(q) = query_str {
         path_with_query.push('?');
         path_with_query.push_str(q);
@@ -172,18 +221,44 @@ pub fn resolve_github_target(
 }
 
 pub fn convert_github_blob_to_raw(url: &str) -> String {
-    if !url.contains("/blob/") {
-        return url.to_string();
+    let mut result = url.to_string();
+
+    // Handle /blob/ URLs
+    if result.contains("/blob/") {
+        if result.contains("://github.com/") {
+            result = result
+                .replace("://github.com/", "://raw.githubusercontent.com/")
+                .replace("/blob/", "/");
+        } else {
+            result = result.replace("/blob/", "/");
+        }
     }
-    if url.contains("://github.com/") && url.contains("/blob/") {
-        return url
+
+    // Handle /raw/refs/heads/ URLs (new GitHub format)
+    // e.g., github.com/owner/repo/raw/refs/heads/main/file -> raw.githubusercontent.com/owner/repo/main/file
+    if result.contains("/raw/refs/heads/") {
+        if result.contains("://github.com/") {
+            result = result.replace("://github.com/", "://raw.githubusercontent.com/");
+        }
+        result = result.replace("/raw/refs/heads/", "/");
+    }
+
+    // Handle /raw/refs/tags/ URLs
+    if result.contains("/raw/refs/tags/") {
+        if result.contains("://github.com/") {
+            result = result.replace("://github.com/", "://raw.githubusercontent.com/");
+        }
+        result = result.replace("/raw/refs/tags/", "/");
+    }
+
+    // Handle simple /raw/ URLs (e.g., github.com/owner/repo/raw/main/file)
+    if result.contains("://github.com/") && result.contains("/raw/") {
+        result = result
             .replace("://github.com/", "://raw.githubusercontent.com/")
-            .replace("/blob/", "/");
+            .replace("/raw/", "/");
     }
-    if url.contains("/blob/") {
-        return url.replace("/blob/", "/");
-    }
-    url.to_string()
+
+    result
 }
 
 pub fn is_github_web_only_path(url: &str) -> bool {
@@ -277,4 +352,77 @@ pub fn is_github_repo_homepage(url: &str) -> bool {
         .collect();
 
     segments.len() == 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_github_raw_path_refs_heads() {
+        let path = "vansour/clash/raw/refs/heads/main/clash.yaml";
+        let result = normalize_github_raw_path(path);
+        assert_eq!(result, "vansour/clash/main/clash.yaml");
+    }
+
+    #[test]
+    fn test_normalize_github_raw_path_refs_tags() {
+        let path = "owner/repo/raw/refs/tags/v1.0.0/file.txt";
+        let result = normalize_github_raw_path(path);
+        assert_eq!(result, "owner/repo/v1.0.0/file.txt");
+    }
+
+    #[test]
+    fn test_normalize_github_raw_path_simple_raw() {
+        let path = "owner/repo/raw/main/path/to/file.txt";
+        let result = normalize_github_raw_path(path);
+        assert_eq!(result, "owner/repo/main/path/to/file.txt");
+    }
+
+    #[test]
+    fn test_normalize_github_raw_path_no_raw() {
+        let path = "owner/repo/main/file.txt";
+        let result = normalize_github_raw_path(path);
+        assert_eq!(result, "owner/repo/main/file.txt");
+    }
+
+    #[test]
+    fn test_convert_github_blob_to_raw() {
+        let url = "https://github.com/owner/repo/blob/main/file.txt";
+        let result = convert_github_blob_to_raw(url);
+        assert_eq!(
+            result,
+            "https://raw.githubusercontent.com/owner/repo/main/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_convert_github_raw_refs_heads_to_raw() {
+        let url = "https://github.com/vansour/clash/raw/refs/heads/main/clash.yaml";
+        let result = convert_github_blob_to_raw(url);
+        assert_eq!(
+            result,
+            "https://raw.githubusercontent.com/vansour/clash/main/clash.yaml"
+        );
+    }
+
+    #[test]
+    fn test_convert_github_raw_refs_tags_to_raw() {
+        let url = "https://github.com/owner/repo/raw/refs/tags/v1.0.0/file.txt";
+        let result = convert_github_blob_to_raw(url);
+        assert_eq!(
+            result,
+            "https://raw.githubusercontent.com/owner/repo/v1.0.0/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_convert_github_simple_raw_to_raw() {
+        let url = "https://github.com/owner/repo/raw/main/file.txt";
+        let result = convert_github_blob_to_raw(url);
+        assert_eq!(
+            result,
+            "https://raw.githubusercontent.com/owner/repo/main/file.txt"
+        );
+    }
 }
