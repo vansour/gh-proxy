@@ -1,4 +1,5 @@
-use crate::{AppState, ProxyError, ProxyResult};
+use crate::errors::{ProxyError, ProxyResult};
+use crate::state::AppState;
 use axum::{
     body::Body,
     extract::{Path, Request, State},
@@ -20,7 +21,7 @@ pub async fn github_proxy(
     match resolve_github_target(&state, &path, query) {
         Ok(target_uri) => {
             info!("Resolved GitHub target: {}", target_uri);
-            match crate::proxy_request(&state, req, target_uri, None).await {
+            match crate::proxy::proxy_request(&state, req, target_uri, None).await {
                 Ok(response) => {
                     info!("GitHub proxy success: status={}", response.status());
                     Ok(response)
