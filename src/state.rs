@@ -1,6 +1,7 @@
 //! Application state and shared types.
 
 use crate::config::{GitHubConfig, Settings};
+use crate::middleware::RateLimiter;
 use crate::services::{
     cloudflare::CloudflareService, ipinfo::IpInfoService, shutdown::ShutdownManager,
     shutdown::UptimeTracker,
@@ -11,6 +12,9 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+
+/// Type alias for the shared hyper HTTP client.
+pub type HyperClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -25,6 +29,7 @@ pub struct AppState {
     pub download_semaphore: Arc<Semaphore>,
     pub cloudflare_service: Arc<CloudflareService>,
     pub ip_info_service: Arc<IpInfoService>,
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 /// Post-processor for response body transformation.

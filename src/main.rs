@@ -69,8 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.server.max_concurrent_requests as usize,
     ));
 
-    // Initialize services
+    // Initialize services (using shared hyper client)
     let cloudflare_service = Arc::new(services::cloudflare::CloudflareService::new(
+        client.clone(),
         settings.cloudflare.clone(),
     ));
     if cloudflare_service.is_enabled() {
@@ -78,8 +79,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ip_info_service = Arc::new(services::ipinfo::IpInfoService::new(
+        client.clone(),
         settings.ipinfo.token.clone(),
     ));
+
+    // Create docker proxy with client clone before moving client
+    let docker_proxy = Some(Arc::new(providers::registry::DockerProxy::new(
+        client.clone(),
+        &settings.registry.default,
+    )));
+
+    // Create rate limiter (100 requests per minute per IP)
+    let rate_limiter = Arc::new(middleware::RateLimiter::new(100, 60));
 
     // Build application state
     let app_state = AppState {
@@ -89,12 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_manager,
         uptime_tracker,
         auth_header,
-        docker_proxy: Some(Arc::new(providers::registry::DockerProxy::new(
-            &settings.registry.default,
-        ))),
+        docker_proxy,
         download_semaphore,
         cloudflare_service,
         ip_info_service,
+        rate_limiter,
     };
 
     // Create router

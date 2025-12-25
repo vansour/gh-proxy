@@ -102,11 +102,18 @@ fn processor_proxy_url(processor: &Option<ResponsePostProcessor>) -> Option<&str
 
 /// Main fallback proxy handler.
 pub async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Response<Body> {
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
+    let method = req.method().to_string();
+
+    // Record request metrics
+    infra::metrics::record_method(&method);
+    infra::metrics::record_request_type(&path);
+
     if matches!(
-        path,
+        path.as_str(),
         "/favicon.ico" | "/robots.txt" | "/apple-touch-icon.png" | "/.well-known/security.txt"
     ) {
+        infra::metrics::record_status(404);
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
@@ -133,6 +140,8 @@ pub async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) ->
             Ok(uri) => uri,
             Err(_) => {
                 info!("Invalid target [IP: {}{}]: {}", client_ip, geo_info, path);
+                infra::metrics::record_status(404);
+                infra::metrics::record_error("invalid_target");
                 let error_msg = format!("404 Not Found\n\nInvalid target: {}\n", path);
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -162,9 +171,21 @@ pub async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) ->
     );
 
     match proxy_request(&state, req, target_uri, post_processor).await {
-        Ok(response) => response,
+        Ok(response) => {
+            infra::metrics::record_status(response.status().as_u16());
+            response
+        }
         Err(error) => {
             warn!("Proxy error [IP: {}{}]: {}", client_ip, geo_info, error);
+            let error_type = match &error {
+                ProxyError::Http(_) => "upstream",
+                ProxyError::TooManyConcurrentRequests => "rate_limit",
+                ProxyError::SizeExceeded(_, _) => "size_exceeded",
+                ProxyError::ProcessingError(msg) if msg.contains("timeout") => "timeout",
+                _ => "other",
+            };
+            infra::metrics::record_error(error_type);
+            infra::metrics::record_status(error.to_status_code().as_u16());
             error_response(error)
         }
     }

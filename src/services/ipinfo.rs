@@ -1,4 +1,7 @@
-use reqwest::Client;
+//! IP information service using ipinfo.io API.
+
+use crate::services::client::{HttpError, get_json};
+use crate::state::HyperClient;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,9 +16,8 @@ struct CacheEntry {
 }
 
 pub struct IpInfoService {
-    client: Client,
+    client: HyperClient,
     token: String,
-    // Cache: IP -> (AS Name, Expiration)
     cache: Arc<RwLock<HashMap<String, CacheEntry>>>,
 }
 
@@ -26,12 +28,9 @@ struct IpInfoResponse {
 }
 
 impl IpInfoService {
-    pub fn new(token: String) -> Self {
+    pub fn new(client: HyperClient, token: String) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(3)) // Fast timeout
-                .build()
-                .unwrap_or_default(),
+            client,
             token,
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -52,42 +51,40 @@ impl IpInfoService {
             }
         }
 
-        // 2. Fetch
+        // 2. Fetch using hyper
         let url = format!("https://api.ipinfo.io/lite/{}?token={}", ip, self.token);
-        match self.client.get(&url).send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    match resp.json::<IpInfoResponse>().await {
-                        Ok(info) => {
-                            let name = if info.as_name.is_empty() {
-                                "Unknown".to_string()
-                            } else {
-                                info.as_name
-                            };
-                            // Cache for 1 hour
-                            let mut cache = self.cache.write().await;
-                            cache.insert(
-                                ip.to_string(),
-                                CacheEntry {
-                                    as_name: name.clone(),
-                                    expires_at: Instant::now() + Duration::from_secs(3600),
-                                },
-                            );
-                            Some(name)
-                        }
-                        Err(e) => {
-                            error!("Failed to parse IP info for {}: {}", ip, e);
-                            None
-                        }
-                    }
+
+        match get_json::<IpInfoResponse>(
+            &self.client,
+            &url,
+            None,
+            3, // 3 second timeout
+        )
+        .await
+        {
+            Ok(info) => {
+                let name = if info.as_name.is_empty() {
+                    "Unknown".to_string()
                 } else {
-                    None
-                }
+                    info.as_name
+                };
+
+                // Cache for 1 hour
+                let mut cache = self.cache.write().await;
+                cache.insert(
+                    ip.to_string(),
+                    CacheEntry {
+                        as_name: name.clone(),
+                        expires_at: Instant::now() + Duration::from_secs(3600),
+                    },
+                );
+                Some(name)
             }
-            Err(_e) => {
-                // Fixed: prefix with _ to suppress unused variable warning
-                // Don't log error to avoid spam if API is down/slow
-                // error!("Failed to fetch IP info: {}", e);
+            Err(HttpError(e)) => {
+                // Don't spam logs for API failures
+                if !e.contains("timeout") {
+                    error!("Failed to fetch IP info for {}: {}", ip, e);
+                }
                 None
             }
         }

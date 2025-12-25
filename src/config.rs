@@ -68,9 +68,9 @@ pub struct IpInfoConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct CloudflareConfig {
-    #[serde(rename = "zoneId")]
+    #[serde(alias = "zoneId")]
     pub zone_id: String,
-    #[serde(rename = "apiToken")]
+    #[serde(alias = "apiToken")]
     pub api_token: String,
 }
 
@@ -83,7 +83,7 @@ impl CloudflareConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProxyConfig {
-    #[serde(rename = "allowedHosts")]
+    #[serde(alias = "allowedHosts")]
     pub allowed_hosts: Vec<String>,
 }
 
@@ -223,13 +223,13 @@ impl HostPattern {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-    #[serde(rename = "sizeLimit")]
+    #[serde(alias = "sizeLimit")]
     pub size_limit: u64,
-    #[serde(rename = "requestTimeoutSecs")]
+    #[serde(alias = "requestTimeoutSecs")]
     pub request_timeout_secs: u64,
-    #[serde(rename = "maxConcurrentRequests")]
+    #[serde(alias = "maxConcurrentRequests")]
     pub max_concurrent_requests: u32,
-    #[serde(rename = "permitAcquireTimeoutSecs")]
+    #[serde(alias = "permitAcquireTimeoutSecs")]
     pub permit_acquire_timeout_secs: u64,
 }
 
@@ -285,6 +285,7 @@ impl ShellConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LogConfig {
+    #[serde(alias = "logFilePath")]
     pub log_file_path: String,
     pub level: String,
 }

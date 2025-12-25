@@ -1,19 +1,47 @@
+//! HTTP client utilities.
+
 use crate::config::ServerConfig;
+use crate::state::HyperClient;
 use axum::body::Body;
+use bytes::Bytes;
+use http_body_util::BodyExt;
+use hyper::header;
 use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::time::Duration;
 
-pub fn build_client(
-    _server: &ServerConfig,
-) -> Client<hyper_rustls::HttpsConnector<HttpConnector>, Body> {
+/// Error type for HTTP operations.
+#[derive(Debug)]
+pub struct HttpError(pub String);
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for HttpError {}
+
+impl From<String> for HttpError {
+    fn from(s: String) -> Self {
+        HttpError(s)
+    }
+}
+
+impl From<&str> for HttpError {
+    fn from(s: &str) -> Self {
+        HttpError(s.to_string())
+    }
+}
+
+/// Build the main hyper HTTP client for proxy operations.
+pub fn build_client(_server: &ServerConfig) -> HyperClient {
     let mut http_connector = HttpConnector::new();
     http_connector.set_nodelay(true);
     http_connector.enforce_http(false);
-
-    // 优化：增加 TCP Keepalive 探测，防止连接在静默期间被防火墙切断
     http_connector.set_keepalive(Some(Duration::from_secs(60)));
 
     let connector = HttpsConnectorBuilder::new()
@@ -23,16 +51,212 @@ pub fn build_client(
         .enable_http2()
         .wrap_connector(http_connector);
 
-    Client::builder(TokioExecutor::new())
+    hyper_util::client::legacy::Client::builder(TokioExecutor::new())
         .http2_only(false)
-        // Cloudflare 场景优化：
-        // 1. 增加空闲连接超时时间 (GitHub 支持较长的 keep-alive)
         .pool_idle_timeout(Duration::from_secs(90))
-        // 2. 针对特定主机的最大空闲连接数。
-        // 因为我们主要访问 github.com，这里设置大一点可以复用更多连接。
         .pool_max_idle_per_host(128)
-        // 3. HTTP/2 窗口大小优化，加速大文件传输
-        .http2_initial_stream_window_size(1024 * 1024) // 1MB 初始流窗口
-        .http2_initial_connection_window_size(4 * 1024 * 1024) // 4MB 初始连接窗口
+        .http2_initial_stream_window_size(1024 * 1024)
+        .http2_initial_connection_window_size(4 * 1024 * 1024)
         .build(connector)
+}
+
+/// Send a GET request and deserialize JSON response.
+pub async fn get_json<T: DeserializeOwned>(
+    client: &HyperClient,
+    url: &str,
+    headers: Option<Vec<(&str, &str)>>,
+    timeout_secs: u64,
+) -> Result<T, HttpError> {
+    let uri: hyper::Uri = url
+        .parse()
+        .map_err(|e| HttpError(format!("Invalid URL: {}", e)))?;
+
+    let mut req = hyper::Request::builder()
+        .method(hyper::Method::GET)
+        .uri(&uri);
+
+    // Add headers
+    if let Some(hdrs) = headers {
+        for (k, v) in hdrs {
+            req = req.header(k, v);
+        }
+    }
+
+    let request = req
+        .body(Body::empty())
+        .map_err(|e| HttpError(format!("Failed to build request: {}", e)))?;
+
+    // Execute with timeout
+    let response = tokio::time::timeout(Duration::from_secs(timeout_secs), client.request(request))
+        .await
+        .map_err(|_| HttpError("Request timeout".to_string()))?
+        .map_err(|e| HttpError(format!("Request failed: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err(HttpError(format!("HTTP error: {}", response.status())));
+    }
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| HttpError(format!("Failed to read body: {}", e)))?
+        .to_bytes();
+
+    serde_json::from_slice(&body_bytes).map_err(|e| HttpError(format!("JSON parse error: {}", e)))
+}
+
+/// Send a POST request with JSON body and deserialize JSON response.
+pub async fn post_json<T: DeserializeOwned, B: Serialize>(
+    client: &HyperClient,
+    url: &str,
+    body: &B,
+    headers: Option<Vec<(&str, &str)>>,
+    timeout_secs: u64,
+) -> Result<T, HttpError> {
+    let uri: hyper::Uri = url
+        .parse()
+        .map_err(|e| HttpError(format!("Invalid URL: {}", e)))?;
+
+    let json_body =
+        serde_json::to_vec(body).map_err(|e| HttpError(format!("JSON serialize error: {}", e)))?;
+
+    let mut req = hyper::Request::builder()
+        .method(hyper::Method::POST)
+        .uri(&uri)
+        .header(header::CONTENT_TYPE, "application/json");
+
+    if let Some(hdrs) = headers {
+        for (k, v) in hdrs {
+            req = req.header(k, v);
+        }
+    }
+
+    let request = req
+        .body(Body::from(json_body))
+        .map_err(|e| HttpError(format!("Failed to build request: {}", e)))?;
+
+    let response = tokio::time::timeout(Duration::from_secs(timeout_secs), client.request(request))
+        .await
+        .map_err(|_| HttpError("Request timeout".to_string()))?
+        .map_err(|e| HttpError(format!("Request failed: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err(HttpError(format!("HTTP error: {}", response.status())));
+    }
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| HttpError(format!("Failed to read body: {}", e)))?
+        .to_bytes();
+
+    serde_json::from_slice(&body_bytes).map_err(|e| HttpError(format!("JSON parse error: {}", e)))
+}
+
+/// Send a GET request and return raw bytes.
+pub async fn get_bytes(
+    client: &HyperClient,
+    url: &str,
+    headers: Option<Vec<(&str, &str)>>,
+    timeout_secs: u64,
+) -> Result<(hyper::StatusCode, hyper::HeaderMap, Bytes), HttpError> {
+    let uri: hyper::Uri = url
+        .parse()
+        .map_err(|e| HttpError(format!("Invalid URL: {}", e)))?;
+
+    let mut req = hyper::Request::builder()
+        .method(hyper::Method::GET)
+        .uri(&uri);
+
+    if let Some(hdrs) = headers {
+        for (k, v) in hdrs {
+            req = req.header(k, v);
+        }
+    }
+
+    let request = req
+        .body(Body::empty())
+        .map_err(|e| HttpError(format!("Failed to build request: {}", e)))?;
+
+    let response = tokio::time::timeout(Duration::from_secs(timeout_secs), client.request(request))
+        .await
+        .map_err(|_| HttpError("Request timeout".to_string()))?
+        .map_err(|e| HttpError(format!("Request failed: {}", e)))?;
+
+    let status = response.status();
+    let headers = response.headers().clone();
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| HttpError(format!("Failed to read body: {}", e)))?
+        .to_bytes();
+
+    Ok((status, headers, body_bytes))
+}
+
+/// Send a HEAD request and return status and headers.
+pub async fn head_request(
+    client: &HyperClient,
+    url: &str,
+    headers: Option<Vec<(&str, &str)>>,
+    timeout_secs: u64,
+) -> Result<(hyper::StatusCode, hyper::HeaderMap), HttpError> {
+    let uri: hyper::Uri = url
+        .parse()
+        .map_err(|e| HttpError(format!("Invalid URL: {}", e)))?;
+
+    let mut req = hyper::Request::builder()
+        .method(hyper::Method::HEAD)
+        .uri(&uri);
+
+    if let Some(hdrs) = headers {
+        for (k, v) in hdrs {
+            req = req.header(k, v);
+        }
+    }
+
+    let request = req
+        .body(Body::empty())
+        .map_err(|e| HttpError(format!("Failed to build request: {}", e)))?;
+
+    let response = tokio::time::timeout(Duration::from_secs(timeout_secs), client.request(request))
+        .await
+        .map_err(|_| HttpError("Request timeout".to_string()))?
+        .map_err(|e| HttpError(format!("Request failed: {}", e)))?;
+
+    Ok((response.status(), response.headers().clone()))
+}
+
+/// Send a request and return the full response for streaming.
+pub async fn request_streaming(
+    client: &HyperClient,
+    method: hyper::Method,
+    url: &str,
+    headers: Option<Vec<(String, String)>>,
+    timeout_secs: u64,
+) -> Result<hyper::Response<hyper::body::Incoming>, HttpError> {
+    let uri: hyper::Uri = url
+        .parse()
+        .map_err(|e| HttpError(format!("Invalid URL: {}", e)))?;
+
+    let mut req = hyper::Request::builder().method(method).uri(&uri);
+
+    if let Some(hdrs) = headers {
+        for (k, v) in hdrs {
+            req = req.header(k.as_str(), v.as_str());
+        }
+    }
+
+    let request = req
+        .body(Body::empty())
+        .map_err(|e| HttpError(format!("Failed to build request: {}", e)))?;
+
+    tokio::time::timeout(Duration::from_secs(timeout_secs), client.request(request))
+        .await
+        .map_err(|_| HttpError("Request timeout".to_string()))?
+        .map_err(|e| HttpError(format!("Request failed: {}", e)))
 }

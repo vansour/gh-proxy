@@ -1,12 +1,15 @@
 //! Application router configuration.
 
 use axum::Router;
+use axum::middleware::from_fn_with_state;
 use axum::routing::{any, get, head, post, put};
+use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::api;
 use crate::handlers;
 use crate::infra;
+use crate::middleware::rate_limit_middleware;
 use crate::providers;
 use crate::proxy;
 use crate::state::AppState;
@@ -18,6 +21,8 @@ pub fn create_router(app_state: AppState) -> Router {
         .allow_methods(Any)
         .allow_headers(Any)
         .expose_headers(Any);
+
+    let rate_limiter = Arc::clone(&app_state.rate_limiter);
 
     Router::new()
         // Static pages
@@ -48,5 +53,6 @@ pub fn create_router(app_state: AppState) -> Router {
         // Fallback proxy handler
         .fallback(proxy::proxy_handler)
         .with_state(app_state)
+        .layer(from_fn_with_state(rate_limiter, rate_limit_middleware))
         .layer(cors)
 }

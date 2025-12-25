@@ -1,5 +1,8 @@
+//! Cloudflare analytics service.
+
 use crate::config::CloudflareConfig;
-use reqwest::Client;
+use crate::services::client::{HttpError, post_json};
+use crate::state::HyperClient;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,7 +21,6 @@ pub struct CloudflareStats {
 struct CachedStats {
     data: CloudflareStats,
     last_updated: Instant,
-    // 强制刷新标记，用于启动时或配置变更后
     force_refresh: bool,
 }
 
@@ -35,7 +37,7 @@ impl Default for CachedStats {
 }
 
 pub struct CloudflareService {
-    client: Client,
+    client: HyperClient,
     config: CloudflareConfig,
     cache: Arc<RwLock<CachedStats>>,
 }
@@ -81,7 +83,6 @@ struct Group {
 struct Sum {
     requests: u64,
     bytes: u64,
-    // 使用 rename 确保字段名准确映射，因为 API 返回的是 camelCase
     #[serde(rename = "cachedRequests")]
     cached_requests: Option<u64>,
     #[serde(rename = "cachedBytes")]
@@ -89,12 +90,9 @@ struct Sum {
 }
 
 impl CloudflareService {
-    pub fn new(config: CloudflareConfig) -> Self {
+    pub fn new(client: HyperClient, config: CloudflareConfig) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(15))
-                .build()
-                .unwrap_or_default(),
+            client,
             config,
             cache: Arc::new(RwLock::new(CachedStats::default())),
         }
@@ -112,7 +110,6 @@ impl CloudflareService {
         // 1. Check cache (Read)
         {
             let cache = self.cache.read().await;
-            // 缓存 10 分钟 (600s)，避免过于频繁调用 GraphQL
             if !cache.force_refresh && cache.last_updated.elapsed() < Duration::from_secs(600) {
                 return Some(cache.data.clone());
             }
@@ -137,7 +134,6 @@ impl CloudflareService {
             }
             Err(e) => {
                 error!("Failed to fetch Cloudflare stats: {}", e);
-                // 失败时也返回旧数据，避免前端空白
                 Some(cache.data.clone())
             }
         }
@@ -145,7 +141,6 @@ impl CloudflareService {
 
     async fn fetch_from_api(&self) -> Result<CloudflareStats, String> {
         let zone_id = &self.config.zone_id;
-        // 查询最近 30 天的数据
         let query = format!(
             r#"
             query {{
@@ -168,34 +163,20 @@ impl CloudflareService {
         );
 
         let payload = GraphqlQuery { query };
+        let auth_header = format!("Bearer {}", self.config.api_token);
 
-        let resp = self
-            .client
-            .post("https://api.cloudflare.com/client/v4/graphql")
-            .header("Authorization", format!("Bearer {}", self.config.api_token))
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let result: Result<GraphqlResponse, HttpError> = post_json(
+            &self.client,
+            "https://api.cloudflare.com/client/v4/graphql",
+            &payload,
+            Some(vec![("Authorization", &auth_header)]),
+            15,
+        )
+        .await;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("API Error {}: {}", status, text));
-        }
+        let body = result.map_err(|e| e.0)?;
 
-        // 获取原始文本以便调试
-        let body_text = resp.text().await.map_err(|e| e.to_string())?;
-
-        // 如果您在 config.toml 中设置 level="debug"，这里会打印原始 JSON
-        debug!("Cloudflare GraphQL Response: {}", body_text);
-
-        let body: GraphqlResponse = serde_json::from_str(&body_text).map_err(|e| {
-            format!(
-                "Failed to parse JSON: {} (Body truncated: {:.100})",
-                e, body_text
-            )
-        })?;
+        debug!("Cloudflare GraphQL Response received");
 
         if let Some(errors) = body.errors
             && !errors.is_empty()

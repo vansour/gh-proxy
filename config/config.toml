@@ -1,13 +1,13 @@
 [server]
 host = "0.0.0.0"
 port = 8080
-sizeLimit = 2048 # MB
+size_limit = 2048 # MB
 
 [shell]
 editor = true
 
 [log]
-logFilePath = "/app/logs/gh-proxy.log"
+log_file_path = "/app/logs/gh-proxy.log"
 level = "debug" # debug, info, warn, error
 
 [auth]
@@ -18,8 +18,8 @@ default = "registry-1.docker.io"
 #registry-1.docker.io, ghcr.io ...
 
 [cloudflare]
-zoneId = ""   # 你的 Cloudflare Zone ID
-apiToken = "" # 具有 Analytics 读取权限的 API Token
+zone_id = ""   # 你的 Cloudflare Zone ID
+api_token = "" # 具有 Analytics 读取权限的 API Token
 
 [ipinfo]
 token = "" # 你的 ipinfo.io API token
