@@ -15,8 +15,8 @@ use crate::errors::{ProxyError, ProxyResult, error_response};
 use crate::infra;
 use crate::middleware::{RequestLifecycle, RequestPermitGuard};
 use crate::proxy::headers::{
-    apply_github_headers, fix_content_type_header, sanitize_request_headers,
-    sanitize_response_headers,
+    add_vary_header, apply_cloudflare_cache_headers, apply_github_headers, fix_content_type_header,
+    sanitize_request_headers, sanitize_response_headers,
 };
 use crate::proxy::resolver::{
     resolve_target_uri_with_validation, should_disable_compression_for_request,
@@ -315,6 +315,8 @@ pub async fn proxy_request(
 
         sanitize_response_headers(&mut parts.headers, true, true, true);
         fix_content_type_header(&mut parts.headers, &target_uri);
+        apply_cloudflare_cache_headers(&mut parts.headers, &target_uri);
+        add_vary_header(&mut parts.headers);
         parts.headers.remove(header::CONTENT_LENGTH);
 
         let body_stream = body
@@ -342,6 +344,8 @@ pub async fn proxy_request(
 
     sanitize_response_headers(&mut parts.headers, false, false, false);
     fix_content_type_header(&mut parts.headers, &target_uri);
+    apply_cloudflare_cache_headers(&mut parts.headers, &target_uri);
+    add_vary_header(&mut parts.headers);
 
     let streaming_body = ProxyBodyStream::new(
         body.into_data_stream()

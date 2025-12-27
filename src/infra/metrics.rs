@@ -177,7 +177,9 @@ static METRICS_CACHE: Lazy<RwLock<MetricsCache>> = Lazy::new(|| {
     })
 });
 
-const METRICS_CACHE_TTL: Duration = Duration::from_secs(1);
+/// Cache TTL for metrics output.
+/// 5 seconds balances freshness with CPU efficiency for Prometheus scraping.
+const METRICS_CACHE_TTL: Duration = Duration::from_secs(5);
 
 pub async fn metrics_handler(
     axum::extract::State(state): axum::extract::State<crate::state::AppState>,

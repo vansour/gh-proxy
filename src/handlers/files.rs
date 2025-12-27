@@ -82,6 +82,12 @@ static DOCKER_INDEX: Lazy<CachedFile> = Lazy::new(|| {
     CachedFile::from_string(html, "text/html; charset=utf-8")
 });
 
+/// Pre-loaded manifest.json for PWA
+static MANIFEST_JSON: Lazy<CachedFile> = Lazy::new(|| {
+    let content = fs::read("/app/web/manifest.json").unwrap_or_default();
+    CachedFile::new(content, "application/manifest+json; charset=utf-8")
+});
+
 /// Build a cached response with proper headers for CDN
 fn build_cached_response(cached: &CachedFile) -> Response<Body> {
     Response::builder()
@@ -127,6 +133,16 @@ pub async fn serve_static_file(uri: Uri) -> Response<Body> {
                 );
             }
             build_cached_response(&SCRIPT_JS)
+        }
+        "manifest.json" => {
+            if MANIFEST_JSON.content.is_empty() {
+                return utils::errors::build_response(
+                    StatusCode::NOT_FOUND,
+                    "text/plain; charset=utf-8",
+                    "File not found".to_string(),
+                );
+            }
+            build_cached_response(&MANIFEST_JSON)
         }
         _ => {
             // Fallback for unknown files - read from disk

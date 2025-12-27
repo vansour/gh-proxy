@@ -4,6 +4,7 @@ use axum::Router;
 use axum::middleware::from_fn_with_state;
 use axum::routing::{any, get, head, post, put};
 use std::sync::Arc;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::api;
@@ -32,6 +33,7 @@ pub fn create_router(app_state: AppState) -> Router {
         .route("/docker", get(handlers::files::serve_docker_index))
         .route("/script.js", get(handlers::files::serve_static_file))
         .route("/favicon.ico", get(handlers::files::serve_favicon))
+        .route("/manifest.json", get(handlers::files::serve_static_file))
         // API endpoints
         .route("/api/config", get(api::get_config))
         .route("/api/stats", get(api::get_stats))
@@ -55,4 +57,6 @@ pub fn create_router(app_state: AppState) -> Router {
         .with_state(app_state)
         .layer(from_fn_with_state(rate_limiter, rate_limit_middleware))
         .layer(cors)
+        // Compression for static files and API responses (Brotli > Gzip)
+        .layer(CompressionLayer::new())
 }

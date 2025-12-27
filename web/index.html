@@ -4,14 +4,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="GitHub 文件加速与 Docker 镜像代理工具">
-    <meta name="theme-color" content="#fafdff">
-    <title>GitHub 文件加速</title>
+    <meta name="description" content="高性能 GitHub 文件代理加速服务，支持 GitHub 文件下载加速与 Docker 镜像代理">
+    <meta name="keywords" content="GitHub,代理,加速,下载,proxy,Docker,镜像">
+    <meta name="author" content="gh-proxy">
+    <meta name="theme-color" content="#0061A4" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#9ECAFF" media="(prefers-color-scheme: dark)">
+
+    <title>GitHub 文件代理加速器 | gh-proxy</title>
+
+    <!-- Preconnect to external resources -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <!-- Preload critical resources -->
+    <link rel="preload" href="style.css" as="style">
+    <link rel="preload" href="script.js" as="script">
+
     <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    <link rel="apple-touch-icon" href="favicon.ico">
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
 </head>
 
 <body>
-
     <div class="container">
         <header class="app-bar">
             <h1>GitHub 文件加速</h1>
@@ -19,38 +36,40 @@
 
         <main>
             <div class="card">
-                <div class="format-selector" id="formatSelector">
-                    <button class="format-btn active" data-format="direct">Direct Link</button>
-                    <button class="format-btn" data-format="git">Git Clone</button>
-                    <button class="format-btn" data-format="wget">Wget</button>
-                    <button class="format-btn" data-format="curl">Curl</button>
-                    <button class="format-btn" data-format="docker">Docker</button>
+                <div class="format-selector" id="formatSelector" role="tablist" aria-label="输出格式选择">
+                    <button class="format-btn active" data-format="direct" role="tab" aria-selected="true">Direct
+                        Link</button>
+                    <button class="format-btn" data-format="git" role="tab" aria-selected="false">Git Clone</button>
+                    <button class="format-btn" data-format="wget" role="tab" aria-selected="false">Wget</button>
+                    <button class="format-btn" data-format="curl" role="tab" aria-selected="false">Curl</button>
+                    <button class="format-btn" data-format="docker" role="tab" aria-selected="false">Docker</button>
                 </div>
 
                 <div class="input-group">
                     <div class="input-container">
+                        <label for="inputUrl" class="visually-hidden">GitHub 链接输入</label>
                         <input type="text" class="text-field" id="inputUrl" placeholder="粘贴 GitHub 链接 (https://...)"
-                            autocomplete="off">
+                            autocomplete="off" spellcheck="false" aria-describedby="errorMsg">
                         <div class="input-actions">
-                            <button class="icon-btn" id="pasteBtn" title="粘贴" style="display:none;">
-                                <svg viewBox="0 0 24 24">
+                            <button class="icon-btn" id="pasteBtn" title="粘贴" style="display:none;" aria-label="从剪贴板粘贴">
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
                                     <path
                                         d="M19 3h-4.18C14.4 1.84 13.3 1 12 1c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 16H5V5h2v3h10V5h2v14z" />
                                 </svg>
                             </button>
-                            <button class="icon-btn" id="clearBtn" title="清空" style="display:none;">
-                                <svg viewBox="0 0 24 24">
+                            <button class="icon-btn" id="clearBtn" title="清空" style="display:none;" aria-label="清空输入">
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
                                     <path
                                         d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
                                 </svg>
                             </button>
                         </div>
                     </div>
-                    <div class="error-msg" id="errorMsg">请输入有效的 GitHub 链接</div>
+                    <div class="error-msg" id="errorMsg" role="alert" aria-live="polite">请输入有效的 GitHub 链接</div>
                 </div>
 
-                <button class="submit-btn" id="generateBtn">
-                    <svg viewBox="0 0 24 24">
+                <button class="submit-btn" id="generateBtn" aria-label="生成加速链接">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path
                             d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z" />
                     </svg>
@@ -58,17 +77,17 @@
                 </button>
             </div>
 
-            <div class="card output-card" id="outputCard">
+            <div class="card output-card" id="outputCard" aria-live="polite">
                 <div class="output-content" id="outputContent"></div>
                 <div class="output-actions">
-                    <button class="icon-btn" id="copyBtn" title="复制">
-                        <svg id="copyIcon" viewBox="0 0 24 24">
+                    <button class="icon-btn" id="copyBtn" title="复制" aria-label="复制到剪贴板">
+                        <svg id="copyIcon" viewBox="0 0 24 24" aria-hidden="true">
                             <path
                                 d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
                         </svg>
                     </button>
-                    <button class="icon-btn" id="openBtn" title="新窗口打开">
-                        <svg viewBox="0 0 24 24">
+                    <button class="icon-btn" id="openBtn" title="新窗口打开" aria-label="在新窗口打开链接">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
                             <path
                                 d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z" />
                         </svg>
@@ -79,8 +98,8 @@
             <!-- 测速链接区域 -->
             <div class="speed-test-section">
                 <a href="https://gh-proxy.top/github.com/vansour/gh-proxy/releases/download/testfile/500MB.tf"
-                    class="speed-test-link" target="_blank">
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                    class="speed-test-link" target="_blank" rel="noopener noreferrer">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
                         <path
                             d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z" />
                     </svg>
@@ -89,14 +108,15 @@
             </div>
 
             <!-- 长条形统计数据面板 -->
-            <div class="stats-container hidden" id="statsContainer">
+            <div class="stats-container hidden" id="statsContainer" aria-label="流量统计">
                 <!-- 流量统计条 -->
                 <div class="stat-bar-card">
                     <div class="stat-header">
                         <span>近30天总流量</span>
                         <span class="stat-value" id="cfTotalBytes">-</span>
                     </div>
-                    <div class="progress-track">
+                    <div class="progress-track" role="progressbar" aria-valuenow="0" aria-valuemin="0"
+                        aria-valuemax="100">
                         <div class="progress-fill" id="cfBytesBar" style="width: 0%"></div>
                     </div>
                     <div class="stat-details">
@@ -111,7 +131,8 @@
                         <span>近30天总请求</span>
                         <span class="stat-value" id="cfTotalReqs">-</span>
                     </div>
-                    <div class="progress-track">
+                    <div class="progress-track" role="progressbar" aria-valuenow="0" aria-valuemin="0"
+                        aria-valuemax="100">
                         <div class="progress-fill" id="cfReqsBar" style="width: 0%"></div>
                     </div>
                     <div class="stat-details">
@@ -124,15 +145,15 @@
 
         <footer>
             &copy;
-            <script>document.write(new Date().getFullYear())</script> GH-Proxy | <a
-                href="https://github.com/vansour/gh-proxy" target="_blank">源码</a>
+            <script>document.write(new Date().getFullYear())</script> GH-Proxy |
+            <a href="https://github.com/vansour/gh-proxy" target="_blank" rel="noopener noreferrer">源码</a>
         </footer>
     </div>
 
-    <div class="toast" id="toast">已复制到剪贴板</div>
-    <div class="version" id="versionBadge">v...</div>
+    <div class="toast" id="toast" role="status" aria-live="polite">已复制到剪贴板</div>
+    <div class="version" id="versionBadge" aria-label="版本号">v...</div>
 
-    <script src="script.js"></script>
+    <script src="script.js" defer></script>
 </body>
 
 </html>

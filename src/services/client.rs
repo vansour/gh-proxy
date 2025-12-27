@@ -38,11 +38,17 @@ impl From<&str> for HttpError {
 }
 
 /// Build the main hyper HTTP client for proxy operations.
+///
+/// Optimized settings:
+/// - Connection timeout to prevent hangs
+/// - Balanced connection pool for GitHub/registry workloads
+/// - HTTP/2 window sizes tuned for large file downloads
 pub fn build_client(_server: &ServerConfig) -> HyperClient {
     let mut http_connector = HttpConnector::new();
-    http_connector.set_nodelay(true);
+    http_connector.set_nodelay(true); // Disable Nagle's algorithm for lower latency
     http_connector.enforce_http(false);
-    http_connector.set_keepalive(Some(Duration::from_secs(60)));
+    http_connector.set_keepalive(Some(Duration::from_secs(90))); // Extended keepalive
+    http_connector.set_connect_timeout(Some(Duration::from_secs(10))); // Connection timeout
 
     let connector = HttpsConnectorBuilder::new()
         .with_webpki_roots()
@@ -53,10 +59,13 @@ pub fn build_client(_server: &ServerConfig) -> HyperClient {
 
     hyper_util::client::legacy::Client::builder(TokioExecutor::new())
         .http2_only(false)
-        .pool_idle_timeout(Duration::from_secs(90))
-        .pool_max_idle_per_host(128)
-        .http2_initial_stream_window_size(1024 * 1024)
-        .http2_initial_connection_window_size(4 * 1024 * 1024)
+        // Connection pool settings optimized for proxy workloads
+        .pool_idle_timeout(Duration::from_secs(120)) // Longer idle for reuse
+        .pool_max_idle_per_host(64) // Balanced pool size (was 128, too aggressive)
+        // HTTP/2 window sizes for large file transfers
+        .http2_initial_stream_window_size(2 * 1024 * 1024) // 2MB stream window
+        .http2_initial_connection_window_size(8 * 1024 * 1024) // 8MB connection window
+        .http2_adaptive_window(true) // Enable adaptive flow control
         .build(connector)
 }
 
