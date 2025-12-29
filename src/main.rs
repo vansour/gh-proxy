@@ -84,8 +84,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &settings.registry.default,
     )));
 
-    // Create rate limiter (100 requests per minute per IP)
-    let rate_limiter = Arc::new(middleware::RateLimiter::new(100, 60));
+    // Create rate limiter (adjustable via config)
+    let rate_limiter = Arc::new(middleware::RateLimiter::new(
+        settings.server.rate_limit_per_min as u32,
+        60,
+    ));
 
     // Build application state
     let app_state = AppState {

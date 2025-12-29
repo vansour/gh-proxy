@@ -15,6 +15,17 @@ pub struct CloudflareStats {
     pub bytes: u64,
     pub cached_requests: u64,
     pub cached_bytes: u64,
+    #[serde(default)]
+    pub series: Vec<DailyStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyStat {
+    pub date: String,
+    pub requests: u64,
+    pub bytes: u64,
+    pub cached_requests: u64,
+    pub cached_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -76,7 +87,13 @@ struct Zone {
 
 #[derive(Deserialize)]
 struct Group {
+    dimensions: Dimensions,
     sum: Sum,
+}
+
+#[derive(Deserialize)]
+struct Dimensions {
+    date: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -146,7 +163,10 @@ impl CloudflareService {
             query {{
               viewer {{
                 zones(filter: {{zoneTag: "{zone_id}"}}) {{
-                  httpRequests1dGroups(limit: 30, filter: {{date_geq: "{date}"}}) {{
+                  httpRequests1dGroups(limit: 30, filter: {{date_geq: "{date}"}}, orderBy: [date_ASC]) {{
+                    dimensions {{
+                      date
+                    }}
                     sum {{
                       requests
                       bytes
@@ -195,11 +215,23 @@ impl CloudflareService {
         let mut total_cached_reqs = 0;
         let mut total_cached_bytes = 0;
 
+        let mut series = Vec::new();
+
         for g in groups {
             total_reqs += g.sum.requests;
             total_bytes += g.sum.bytes;
-            total_cached_reqs += g.sum.cached_requests.unwrap_or(0);
-            total_cached_bytes += g.sum.cached_bytes.unwrap_or(0);
+            let cached_reqs = g.sum.cached_requests.unwrap_or(0);
+            let cached_bytes = g.sum.cached_bytes.unwrap_or(0);
+            total_cached_reqs += cached_reqs;
+            total_cached_bytes += cached_bytes;
+
+            series.push(DailyStat {
+                date: g.dimensions.date,
+                requests: g.sum.requests,
+                bytes: g.sum.bytes,
+                cached_requests: cached_reqs,
+                cached_bytes,
+            });
         }
 
         Ok(CloudflareStats {
@@ -207,6 +239,7 @@ impl CloudflareService {
             bytes: total_bytes,
             cached_requests: total_cached_reqs,
             cached_bytes: total_cached_bytes,
+            series,
         })
     }
 }

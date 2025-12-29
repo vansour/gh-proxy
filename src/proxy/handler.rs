@@ -208,19 +208,56 @@ pub async fn proxy_request(
     let (mut req_parts, body) = req.into_parts();
     req_parts.uri = current_uri.clone();
 
+    let request_size_limit_mb = state.settings.server.request_size_limit;
+    let request_size_limit_bytes = request_size_limit_mb * 1024 * 1024;
+
+    // Check Content-Length header first
+    if let Some(len) = req_parts
+        .headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        && len > request_size_limit_bytes
+    {
+        let error = ProxyError::SizeExceeded(len / 1024 / 1024, request_size_limit_mb);
+        lifecycle.fail(Some(&error));
+        return Err(error);
+    }
+
     let mut body_bytes: Option<Bytes> = None;
     let should_buffer = should_buffer_request_body(&initial_method, &req_parts.headers);
+
     let request_body = if should_buffer {
-        match body.collect().await {
+        // Enforce size limit while reading body
+        let limited_body = http_body_util::Limited::new(body, request_size_limit_bytes as usize);
+        match BodyExt::collect(limited_body).await {
             Ok(c) => {
                 let b = c.to_bytes();
                 body_bytes = Some(b.clone());
                 Body::from(b)
             }
-            Err(e) => return Err(ProxyError::ProcessingError(e.to_string())),
+            Err(e) => {
+                // Determine if it was a size limit error
+                let err_str = e.to_string();
+                if err_str.contains("length limit exceeded") {
+                    let error = ProxyError::SizeExceeded(0, request_size_limit_mb);
+                    lifecycle.fail(Some(&error));
+                    return Err(error);
+                }
+                return Err(ProxyError::ProcessingError(err_str));
+            }
         }
     } else {
-        Body::empty()
+        // If we don't buffer, we must still enforce the limit during streaming
+        // However, since we are passing the body to Hyper client,
+        // strictly enforcing it here without buffering is tricky unless we wrap the stream.
+        // For now, we trust Content-Length if checked above, or rely on upstream timeout.
+        // To be safer, we wrap it in a Limited body (but this consumes `body` and makes it `Body` again).
+        Body::from_stream(
+            http_body_util::Limited::new(body, request_size_limit_bytes as usize)
+                .into_data_stream()
+                .map(|res| res.map_err(std::io::Error::other)),
+        )
     };
 
     let mut req = Request::from_parts(req_parts, request_body);

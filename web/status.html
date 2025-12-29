@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统状态 - GH-Proxy</title>
+    <meta name="description" content="GH-Proxy 服务实时运行状态监控，包括流量统计、缓存命中率及每日趋势。">
+    <meta name="theme-color" content="#ffffff">
+    <link rel="stylesheet" href="style.css?v=1.4">
+    <link rel="icon" href="favicon.ico">
+    <style>
+        /* Override container width for the status dashboard to fit 3 cards */
+        .container {
+            max-width: 1200px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            /* Fixed 3 columns as requested */
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            /* Compact gap */
+            margin-bottom: 1rem;
+        }
+
+        /* Responsive adjustments for mobile: stack if screen is too narrow (< 768px) 
+           Otherwise it stays fixed 3 columns on desktop/tablet */
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .metric-card {
+            background: var(--surface-glass);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-title {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+
+
+        .metric-sub {
+            font-size: 0.85rem;
+            color: var(--success);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .chart-container {
+            margin-top: 2rem;
+            height: 12px;
+            background: var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .chart-fill {
+            height: 100%;
+            background: var(--primary);
+            transition: width 1s ease-out;
+        }
+
+        .chart-fill.cached {
+            background: var(--success);
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-weight: 500;
+            margin-bottom: 2rem;
+            transition: color 0.2s;
+        }
+
+        .back-link:hover {
+            color: var(--primary);
+        }
+
+        /* Revert to vertical stack for charts */
+        .charts-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        /* Compact Metric Card Styles */
+        .metric-card {
+            padding: 1.25rem;
+            /* Reduced padding */
+        }
+
+        .metric-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.8rem;
+            /* Smaller font */
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header class="header">
+            <a href="/" class="back-link">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                </svg>
+                返回
+            </a>
+
+            <h1 style="font-size: 1.25rem; margin: 0; font-weight: 600;">服务运行状态</h1>
+
+            <button class="theme-toggle" id="themeToggle">
+                <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" style="display:none;">
+                    <circle cx="12" cy="12" r="5"></circle>
+                    <line x1="12" y1="1" x2="12" y2="3"></line>
+                    <line x1="12" y1="21" x2="12" y2="23"></line>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                    <line x1="1" y1="12" x2="3" y2="12"></line>
+                    <line x1="21" y1="12" x2="23" y2="12"></line>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+                <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+            </button>
+        </header>
+
+
+
+        <!-- Stats Dashboard -->
+        <div id="statsDashboard" class="dashboard-grid">
+            <!-- Node Info Card -->
+            <div class="metric-card">
+                <div class="metric-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+                    </svg>
+                    节点状态
+                </div>
+                <div class="metric-value" style="color: var(--success); font-size: 1.5rem;">
+                    正常运行
+                </div>
+                <div class="metric-sub">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                    </svg>
+                    版本 <span id="version" style="margin-left:4px; font-family:'JetBrains Mono'">-</span>
+                </div>
+                <div class="chart-container" style="background: transparent; margin-top: 2rem;">
+                    <!-- Visual pulse animation -->
+                    <div style="width: 100%; height: 100%; display: flex; align-items: center; gap: 4px;">
+                        <span
+                            style="height: 4px; width: 4px; background: var(--success); border-radius: 50%; opacity: 0.8;"></span>
+                        <span
+                            style="height: 4px; width: 4px; background: var(--success); border-radius: 50%; opacity: 0.6;"></span>
+                        <span
+                            style="height: 4px; width: 4px; background: var(--success); border-radius: 50%; opacity: 0.4;"></span>
+                    </div>
+                </div>
+                <div
+                    style="display:flex; justify-content:space-between; margin-top:0.5rem; font-size:0.8rem; color:var(--text-muted);">
+                    <span>系统负载</span>
+                    <span>正常</span>
+                </div>
+            </div>
+
+            <!-- Traffic Card -->
+            <div class="metric-card">
+                <div class="metric-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12V7H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                        <path d="M3 5v14a2 2 0 0 0 2 2h16v-5"></path>
+                        <path d="M18 12a2 2 0 0 0 0 4h4v-4Z"></path>
+                    </svg>
+                    30天总流量
+                </div>
+                <div class="metric-value" id="totalBytes">-</div>
+                <div class="metric-sub">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                    节省 <span id="savedBytes" style="margin-left:4px">-</span>
+                </div>
+                <!-- Progress bar for cache hit -->
+                <div class="chart-container">
+                    <div class="chart-fill cached" id="bytesBar" style="width: 0%"></div>
+                </div>
+                <div
+                    style="display:flex; justify-content:space-between; margin-top:0.5rem; font-size:0.8rem; color:var(--text-muted);">
+                    <span>缓存命中率</span>
+                    <span id="bytesRate">0%</span>
+                </div>
+            </div>
+
+            <!-- Requests Card -->
+            <div class="metric-card">
+                <div class="metric-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    30天总请求
+                </div>
+                <div class="metric-value" id="totalReqs">-</div>
+                <div class="metric-sub">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                    缓存 <span id="cachedReqs" style="margin-left:4px">-</span>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-fill cached" id="reqsBar" style="width: 0%"></div>
+                </div>
+                <div
+                    style="display:flex; justify-content:space-between; margin-top:0.5rem; font-size:0.8rem; color:var(--text-muted);">
+                    <span>请求命中率</span>
+                    <span id="reqsRate">0%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts Container (Stacked) -->
+        <div class="charts-container">
+            <div class="glass-card" style="margin-bottom: 0; padding: 1rem;">
+                <h3 style="font-size: 0.85rem; margin-top: 0; margin-bottom: 0.5rem;">每日流量趋势 (30天)</h3>
+                <div id="chartContainer" style="height: 120px; width: 100%; position: relative;">
+                    <!-- SVG Chart will be rendered here -->
+                </div>
+            </div>
+
+            <div class="glass-card" style="margin-bottom: 0; padding: 1rem;">
+                <h3 style="font-size: 0.85rem; margin-top: 0; margin-bottom: 0.5rem;">每日请求趋势 (30天)</h3>
+                <div id="reqChartContainer" style="height: 120px; width: 100%; position: relative;">
+                    <!-- SVG Chart will be rendered here -->
+                </div>
+            </div>
+        </div>
+
+
+
+
+        <p>&copy;
+            <script>document.write(new Date().getFullYear())</script> GH-Proxy Service
+        </p>
+        </footer>
+    </div>
+    <script src="script.js?v=1.4"></script>
+</body>
+
+</html>

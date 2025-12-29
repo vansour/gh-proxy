@@ -1,11 +1,12 @@
 use axum::body::Body;
 use axum::http::{Response, StatusCode};
 use hyper::header;
-use std::fs;
 use std::path::Path;
+use tokio::fs as tokio_fs;
 use tracing::{error, warn};
-pub fn read_file_bytes_or_empty<P: AsRef<Path>>(path: P) -> Vec<u8> {
-    match fs::read(path.as_ref()) {
+
+pub async fn read_file_bytes_or_empty_async<P: AsRef<Path>>(path: P) -> Vec<u8> {
+    match tokio_fs::read(path.as_ref()).await {
         Ok(content) => content,
         Err(e) => {
             warn!(

@@ -82,6 +82,13 @@ static DOCKER_INDEX: Lazy<CachedFile> = Lazy::new(|| {
     CachedFile::from_string(html, "text/html; charset=utf-8")
 });
 
+/// Pre-loaded status.html
+static STATUS_HTML: Lazy<CachedFile> = Lazy::new(|| {
+    let html = fs::read_to_string("/app/web/status.html")
+        .unwrap_or_else(|_| "<html><body><h1>Status page missing</h1></body></html>".to_string());
+    CachedFile::from_string(html, "text/html; charset=utf-8")
+});
+
 /// Pre-loaded manifest.json for PWA
 static MANIFEST_JSON: Lazy<CachedFile> = Lazy::new(|| {
     let content = fs::read("/app/web/manifest.json").unwrap_or_default();
@@ -107,6 +114,10 @@ fn build_cached_response(cached: &CachedFile) -> Response<Body> {
 
 pub async fn index() -> impl axum::response::IntoResponse {
     build_cached_response(&INDEX_HTML)
+}
+
+pub async fn serve_status_page() -> impl axum::response::IntoResponse {
+    build_cached_response(&STATUS_HTML)
 }
 
 pub async fn serve_static_file(uri: Uri) -> Response<Body> {
@@ -147,7 +158,7 @@ pub async fn serve_static_file(uri: Uri) -> Response<Body> {
         _ => {
             // Fallback for unknown files - read from disk
             let file_path = format!("/app/web/{}", path);
-            let content = utils::errors::read_file_bytes_or_empty(&file_path);
+            let content = utils::errors::read_file_bytes_or_empty_async(&file_path).await;
             if content.is_empty() && !std::path::Path::new(&file_path).exists() {
                 utils::errors::build_response(
                     StatusCode::NOT_FOUND,

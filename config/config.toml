@@ -18,5 +18,5 @@ default = "registry-1.docker.io"
 #registry-1.docker.io, ghcr.io ...
 
 [cloudflare]
-zone_id = ""   # 你的 Cloudflare Zone ID
-api_token = "" # 具有 Analytics 读取权限的 API Token
+zone_id = "78bc1a5784ce91db9d41c2f5a8863a4f"   # 你的 Cloudflare Zone ID
+api_token = "5opAD1XvkGPxmfSYTO58KUsywFfvGotJCUepSX-Z" # 具有 Analytics 读取权限的 API Token

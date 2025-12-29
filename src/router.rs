@@ -31,6 +31,7 @@ pub fn create_router(app_state: AppState) -> Router {
         .route("/healthz", get(handlers::health::health_liveness))
         .route("/style.css", get(handlers::files::serve_static_file))
         .route("/docker", get(handlers::files::serve_docker_index))
+        .route("/status", get(handlers::files::serve_status_page))
         .route("/script.js", get(handlers::files::serve_static_file))
         .route("/favicon.ico", get(handlers::files::serve_favicon))
         .route("/manifest.json", get(handlers::files::serve_static_file))

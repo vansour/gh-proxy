@@ -223,6 +223,12 @@ pub struct ServerConfig {
     pub max_concurrent_requests: u32,
     #[serde(alias = "permitAcquireTimeoutSecs")]
     pub permit_acquire_timeout_secs: u64,
+    #[serde(alias = "requestSizeLimit")]
+    pub request_size_limit: u64,
+    #[serde(alias = "rateLimitPerMin")]
+    pub rate_limit_per_min: u64,
+    #[serde(alias = "staticDir")]
+    pub static_dir: String,
 }
 
 impl Default for ServerConfig {
@@ -234,6 +240,9 @@ impl Default for ServerConfig {
             request_timeout_secs: 60,
             max_concurrent_requests: 100,
             permit_acquire_timeout_secs: 10,
+            request_size_limit: 10,
+            rate_limit_per_min: 100,
+            static_dir: "/app/web".to_string(),
         }
     }
 }
@@ -256,6 +265,11 @@ impl ServerConfig {
         if self.size_limit == 0 {
             return Err(ConfigError::Validation(
                 "server.sizeLimit must be at least 1 MB".to_string(),
+            ));
+        }
+        if self.request_size_limit == 0 {
+            return Err(ConfigError::Validation(
+                "server.requestSizeLimit must be at least 1 MB".to_string(),
             ));
         }
         Ok(())
