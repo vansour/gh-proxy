@@ -51,17 +51,31 @@ fn get_client_country(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Maximum size to buffer in memory for retry purposes (256KB).
+const MAX_MEMORY_BUFFER_SIZE: u64 = 256 * 1024;
+
 /// Check if request body should be buffered.
+///
+/// We only buffer small requests to support retries on redirects.
+/// Large requests are streamed directly to prevent OOM.
 fn should_buffer_request_body(method: &Method, headers: &HeaderMap) -> bool {
-    if headers.contains_key(header::CONTENT_LENGTH)
-        || headers.contains_key(header::TRANSFER_ENCODING)
-    {
-        return true;
+    // If it's a GET/HEAD, we don't need to buffer body (there usually isn't one)
+    if *method == Method::GET || *method == Method::HEAD {
+        return false;
     }
-    matches!(
-        *method,
-        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
-    )
+
+    // Check Content-Length
+    if let Some(cl) = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        return cl <= MAX_MEMORY_BUFFER_SIZE;
+    }
+
+    // If no Content-Length (e.g. chunked), we assume it might be large and specific to not buffer
+    // effectively disabling redirect retries for chunked uploads.
+    false
 }
 
 /// Check if response needs text processing.
@@ -249,10 +263,6 @@ pub async fn proxy_request(
         }
     } else {
         // If we don't buffer, we must still enforce the limit during streaming
-        // However, since we are passing the body to Hyper client,
-        // strictly enforcing it here without buffering is tricky unless we wrap the stream.
-        // For now, we trust Content-Length if checked above, or rely on upstream timeout.
-        // To be safer, we wrap it in a Limited body (but this consumes `body` and makes it `Body` again).
         Body::from_stream(
             http_body_util::Limited::new(body, request_size_limit_bytes as usize)
                 .into_data_stream()
@@ -280,7 +290,16 @@ pub async fn proxy_request(
     infra::metrics::HTTP_ACTIVE_REQUESTS.inc();
     let mut permit_guard = RequestPermitGuard::new(permit, start);
 
+    let mut redirect_count = 0;
+    const MAX_REDIRECTS: u32 = 10;
+
     let response = loop {
+        if redirect_count >= MAX_REDIRECTS {
+            return Err(ProxyError::ProcessingError(
+                "Too many redirects".to_string(),
+            ));
+        }
+
         let req_timeout = Duration::from_secs(state.settings.server.request_timeout_secs);
         let response = match tokio::time::timeout(req_timeout, state.client.request(req)).await {
             Ok(Ok(resp)) => resp,
@@ -296,6 +315,13 @@ pub async fn proxy_request(
             #[allow(clippy::collapsible_if)]
             if let Some(loc) = location {
                 if let Ok(new_uri) = loc.parse::<Uri>() {
+                    // Check if we can retry (must have buffered body or no body required)
+                    if body_bytes.is_none() && initial_method != Method::GET && initial_method != Method::HEAD {
+                        // Cannot retry streaming request
+                        break response;
+                    }
+
+                    redirect_count += 1;
                     current_uri = new_uri;
                     let retry_body = body_bytes
                         .as_ref()
