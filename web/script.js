@@ -129,14 +129,16 @@
 
     function applyTheme(theme) {
         document.body.setAttribute('data-theme', theme);
+        const metaTheme = document.querySelector('meta[name="theme-color"]');
+
         if (theme === 'dark') {
-            EL.iconMoon.style.display = 'none';
-            EL.iconSun.style.display = 'block';
-            document.querySelector('meta[name="theme-color"]').setAttribute('content', '#111318');
+            if (EL.iconMoon) EL.iconMoon.style.display = 'none';
+            if (EL.iconSun) EL.iconSun.style.display = 'block';
+            if (metaTheme) metaTheme.setAttribute('content', '#111318');
         } else {
-            EL.iconMoon.style.display = 'block';
-            EL.iconSun.style.display = 'none';
-            document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff');
+            if (EL.iconMoon) EL.iconMoon.style.display = 'block';
+            if (EL.iconSun) EL.iconSun.style.display = 'none';
+            if (metaTheme) metaTheme.setAttribute('content', '#ffffff');
         }
     }
 
