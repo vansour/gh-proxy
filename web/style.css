@@ -492,6 +492,18 @@ body {
     transform: translate(-50%, 0);
 }
 
+.version {
+    position: fixed;
+    bottom: 1rem;
+    right: 1.5rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+    opacity: 0.7;
+    z-index: 50;
+    pointer-events: none;
+}
+
 /* Mobile Adjustments */
 @media (max-width: 640px) {
     .container {

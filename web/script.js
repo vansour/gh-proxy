@@ -484,7 +484,9 @@
 
     function bindEvents() {
         // Theme
-        EL.themeToggle.addEventListener('click', toggleTheme);
+        if (EL.themeToggle) {
+            EL.themeToggle.addEventListener('click', toggleTheme);
+        }
 
         // Format tabs
         EL.formatBtns.forEach(btn => {
@@ -511,23 +513,27 @@
             });
 
             // Clear/Paste
-            EL.clearBtn.addEventListener('click', () => {
-                EL.input.value = '';
-                EL.input.focus();
-                EL.outputCard.style.display = 'none';
-                updateInputButtons(false);
-            });
+            if (EL.clearBtn) {
+                EL.clearBtn.addEventListener('click', () => {
+                    EL.input.value = '';
+                    EL.input.focus();
+                    EL.outputCard.style.display = 'none';
+                    updateInputButtons(false);
+                });
+            }
 
-            EL.pasteBtn.addEventListener('click', async () => {
-                try {
-                    const text = await navigator.clipboard.readText();
-                    EL.input.value = text;
-                    EL.input.dispatchEvent(new Event('input'));
-                    processInput();
-                } catch (err) {
-                    showToast('无法读取剪贴板');
-                }
-            });
+            if (EL.pasteBtn) {
+                EL.pasteBtn.addEventListener('click', async () => {
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        EL.input.value = text;
+                        EL.input.dispatchEvent(new Event('input'));
+                        processInput();
+                    } catch (err) {
+                        showToast('无法读取剪贴板');
+                    }
+                });
+            }
 
             // Generate/Copy/Open
             EL.generateBtn.addEventListener('click', processInput);
