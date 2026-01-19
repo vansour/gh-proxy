@@ -28,8 +28,8 @@
         themeToggle: document.getElementById('themeToggle'),
         iconSun: document.querySelector('.icon-sun'),
         iconMoon: document.querySelector('.icon-moon'),
-        historySection: document.getElementById('historySection'),
-        historyList: document.getElementById('historyList'),
+        iconMoon: document.querySelector('.icon-moon'),
+        // History elements removed
         // Status Dashboard (Status Page)
         statsDashboard: document.getElementById('statsDashboard'),
         totalBytes: document.getElementById('totalBytes'),
@@ -49,7 +49,7 @@
     const STATE = {
         format: 'direct',
         statsInterval: null,
-        history: JSON.parse(localStorage.getItem('gh-proxy-history') || '[]'),
+        statsInterval: null,
         theme: localStorage.getItem('gh-proxy-theme') || 'light'
     };
 
@@ -148,47 +148,8 @@
         applyTheme(STATE.theme);
     }
 
-    // ========================================================================
-    // History Logic
-    // ========================================================================
+    // History Logic Removed
 
-    function saveHistory(url) {
-        // Remove duplicate if exists
-        STATE.history = STATE.history.filter(item => item !== url);
-        // Add to front
-        STATE.history.unshift(url);
-        // Trim
-        if (STATE.history.length > CONFIG.MAX_HISTORY) {
-            STATE.history.pop();
-        }
-        localStorage.setItem('gh-proxy-history', JSON.stringify(STATE.history));
-        renderHistory();
-    }
-
-    function renderHistory() {
-        if (STATE.history.length === 0 || !EL.historySection) {
-            if (EL.historySection) EL.historySection.style.display = 'none';
-            return;
-        }
-
-        EL.historySection.style.display = 'block';
-        EL.historyList.innerHTML = '';
-
-        STATE.history.forEach(url => {
-            const div = document.createElement('div');
-            div.className = 'history-item';
-            div.innerHTML = `
-                <div class="history-text">${url}</div>
-            `;
-            div.onclick = () => {
-                EL.input.value = url;
-                EL.input.dispatchEvent(new Event('input'));
-                processInput();
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-            };
-            EL.historyList.appendChild(div);
-        });
-    }
 
     // ========================================================================
     // Core Logic
@@ -280,8 +241,7 @@
                         result = directLink;
                 }
             }
-            // Save to history only if successful
-            saveHistory(rawUrl);
+            // Save to history removed
 
         } catch (e) {
             return showError('解析错误，请检查链接');
@@ -574,7 +534,7 @@
         }
 
         bindEvents();
-        renderHistory();
+        bindEvents();
         fetchInitialData();
         fetchStats(); // Explicitly fetch stats immediately
 

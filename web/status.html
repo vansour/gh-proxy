@@ -17,15 +17,11 @@
 
         .dashboard-grid {
             display: grid;
-            /* Fixed 3 columns as requested */
             grid-template-columns: repeat(3, 1fr);
-            gap: 1rem;
-            /* Compact gap */
-            margin-bottom: 1rem;
+            gap: 1.25rem;
+            margin-bottom: 2rem;
         }
 
-        /* Responsive adjustments for mobile: stack if screen is too narrow (< 768px) 
-           Otherwise it stays fixed 3 columns on desktop/tablet */
         @media (max-width: 768px) {
             .dashboard-grid {
                 grid-template-columns: 1fr;
@@ -34,27 +30,42 @@
 
         .metric-card {
             background: var(--surface-glass);
+            backdrop-filter: var(--mica-blur);
             border: 1px solid var(--border);
             border-radius: var(--radius-lg);
-            padding: 2rem;
+            padding: 1.5rem;
             position: relative;
             overflow: hidden;
+            box-shadow: var(--shadow-md);
+            transition: transform 0.2s var(--ease-out);
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
         }
 
         .metric-title {
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             color: var(--text-muted);
-            font-weight: 600;
-            margin-bottom: 1rem;
+            font-weight: 500;
+            margin-bottom: 1.25rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }
 
-
+        .metric-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.5px;
+        }
 
         .metric-sub {
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             color: var(--success);
             font-weight: 500;
             display: flex;
@@ -63,10 +74,10 @@
         }
 
         .chart-container {
-            margin-top: 2rem;
-            height: 12px;
-            background: var(--border);
-            border-radius: 6px;
+            margin-top: 1.5rem;
+            height: 6px;
+            background: var(--border-strong);
+            border-radius: 3px;
             overflow: hidden;
             display: flex;
         }
@@ -74,7 +85,7 @@
         .chart-fill {
             height: 100%;
             background: var(--primary);
-            transition: width 1s ease-out;
+            transition: width 1s var(--ease-out);
         }
 
         .chart-fill.cached {
@@ -88,12 +99,14 @@
             color: var(--text-muted);
             text-decoration: none;
             font-weight: 500;
-            margin-bottom: 2rem;
-            transition: color 0.2s;
+            transition: all 0.1s var(--ease-out);
+            padding: 0.5rem;
+            border-radius: var(--radius-md);
         }
 
         .back-link:hover {
             color: var(--primary);
+            background: var(--border);
         }
 
         /* Revert to vertical stack for charts */
@@ -101,21 +114,6 @@
             display: flex;
             flex-direction: column;
             gap: 1.5rem;
-        }
-
-        /* Compact Metric Card Styles */
-        .metric-card {
-            padding: 1.25rem;
-            /* Reduced padding */
-        }
-
-        .metric-value {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1.8rem;
-            /* Smaller font */
-            font-weight: 700;
-            color: var(--text-main);
-            margin-bottom: 0.5rem;
         }
     </style>
 </head>
