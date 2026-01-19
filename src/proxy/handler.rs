@@ -316,7 +316,10 @@ pub async fn proxy_request(
             if let Some(loc) = location {
                 if let Ok(new_uri) = loc.parse::<Uri>() {
                     // Check if we can retry (must have buffered body or no body required)
-                    if body_bytes.is_none() && initial_method != Method::GET && initial_method != Method::HEAD {
+                    if body_bytes.is_none()
+                        && initial_method != Method::GET
+                        && initial_method != Method::HEAD
+                    {
                         // Cannot retry streaming request
                         break response;
                     }
