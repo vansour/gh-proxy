@@ -2,6 +2,34 @@
 host = "0.0.0.0"
 port = 8080
 size_limit = 2048 # MB
+request_timeout_secs = 60
+max_concurrent_requests = 100
+request_size_limit = 10 # MB
+rate_limit_per_min = 100
+
+# 连接池配置
+[server.connection_pool]
+max_idle_per_host = 64
+idle_timeout_secs = 120
+keepalive_interval_secs = 30
+
+# 流式传输配置
+[server.streaming]
+buffer_size_kb = 64
+enable_chunked_transfer = true
+enable_http2 = true
+
+# 重试配置
+[server.retry]
+max_attempts = 3
+base_delay_ms = 100
+max_delay_ms = 5000
+
+# 熔断器配置
+[server.circuit_breaker]
+failure_threshold = 5
+recovery_timeout_secs = 30
+half_open_max_attempts = 3
 
 [shell]
 editor = true
@@ -20,3 +48,7 @@ default = "registry-1.docker.io"
 [cloudflare]
 zone_id = "78bc1a5784ce91db9d41c2f5a8863a4f"   # 你的 Cloudflare Zone ID
 api_token = "5opAD1XvkGPxmfSYTO58KUsywFfvGotJCUepSX-Z" # 具有 Analytics 读取权限的 API Token
+# 新增：缓存状态监控
+enable_cache_status = true
+# 新增：智能路由
+enable_smart_routing = true

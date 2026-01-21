@@ -64,6 +64,10 @@ pub struct CloudflareConfig {
     pub zone_id: String,
     #[serde(alias = "apiToken")]
     pub api_token: String,
+    #[serde(alias = "enableCacheStatus")]
+    pub enable_cache_status: bool,
+    #[serde(alias = "enableSmartRouting")]
+    pub enable_smart_routing: bool,
 }
 
 impl CloudflareConfig {
@@ -210,7 +214,101 @@ impl HostPattern {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ConnectionPoolConfig {
+    #[serde(alias = "maxIdlePerHost")]
+    pub max_idle_per_host: usize,
+    #[serde(alias = "idleTimeoutSecs")]
+    pub idle_timeout_secs: u64,
+    #[serde(alias = "keepaliveIntervalSecs")]
+    pub keepalive_interval_secs: u64,
+}
+
+impl ConnectionPoolConfig {
+    pub fn idle_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.idle_timeout_secs)
+    }
+
+    pub fn keepalive_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.keepalive_interval_secs)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct StreamingConfig {
+    #[serde(alias = "bufferSizeKb")]
+    pub buffer_size_kb: usize,
+    #[serde(alias = "enableChunkedTransfer")]
+    pub enable_chunked_transfer: bool,
+    #[serde(alias = "enableHttp2")]
+    pub enable_http2: bool,
+}
+
+impl StreamingConfig {
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size_kb * 1024
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct RetryConfig {
+    #[serde(alias = "maxAttempts")]
+    pub max_attempts: u32,
+    #[serde(alias = "baseDelayMs")]
+    pub base_delay_ms: u64,
+    #[serde(alias = "maxDelayMs")]
+    pub max_delay_ms: u64,
+}
+
+impl RetryConfig {
+    pub fn base_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.base_delay_ms)
+    }
+
+    pub fn max_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.max_delay_ms)
+    }
+
+    pub fn should_retry(&self, attempt: u32, error: &crate::errors::ProxyError) -> bool {
+        if attempt >= self.max_attempts {
+            return false;
+        }
+
+        // 只重试特定类型的错误
+        match error {
+            crate::errors::ProxyError::Http(_) => true,
+            crate::errors::ProxyError::ProcessingError(msg) if msg.contains("timeout") => true,
+            _ => false,
+        }
+    }
+
+    pub fn get_delay(&self, attempt: u32) -> std::time::Duration {
+        let delay = self.base_delay_ms * 2_u64.pow(attempt);
+        std::time::Duration::from_millis(delay.min(self.max_delay_ms))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct CircuitBreakerConfig {
+    #[serde(alias = "failureThreshold")]
+    pub failure_threshold: u32,
+    #[serde(alias = "recoveryTimeoutSecs")]
+    pub recovery_timeout_secs: u64,
+    #[serde(alias = "halfOpenMaxAttempts")]
+    pub half_open_max_attempts: u32,
+}
+
+impl CircuitBreakerConfig {
+    pub fn recovery_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.recovery_timeout_secs)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ServerConfig {
     pub host: String,
@@ -229,22 +327,14 @@ pub struct ServerConfig {
     pub rate_limit_per_min: u64,
     #[serde(alias = "staticDir")]
     pub static_dir: String,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            host: "0.0.0.0".to_string(),
-            port: 8080,
-            size_limit: 125,
-            request_timeout_secs: 60,
-            max_concurrent_requests: 100,
-            permit_acquire_timeout_secs: 10,
-            request_size_limit: 10,
-            rate_limit_per_min: 100,
-            static_dir: "/app/web".to_string(),
-        }
-    }
+    #[serde(alias = "connectionPool")]
+    pub connection_pool: ConnectionPoolConfig,
+    #[serde(alias = "streaming")]
+    pub streaming: StreamingConfig,
+    #[serde(alias = "retry")]
+    pub retry: RetryConfig,
+    #[serde(alias = "circuitBreaker")]
+    pub circuit_breaker: CircuitBreakerConfig,
 }
 
 impl ServerConfig {

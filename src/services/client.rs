@@ -39,15 +39,17 @@ impl From<&str> for HttpError {
 
 /// Build the main hyper HTTP client for proxy operations.
 ///
-/// Optimized settings:
+/// Optimized settings based on configuration:
 /// - Connection timeout to prevent hangs
-/// - Balanced connection pool for GitHub/registry workloads
+/// - Configurable connection pool for GitHub/registry workloads
 /// - HTTP/2 window sizes tuned for large file downloads
-pub fn build_client(_server: &ServerConfig) -> HyperClient {
+pub fn build_client(server: &ServerConfig) -> HyperClient {
     let mut http_connector = HttpConnector::new();
     http_connector.set_nodelay(true); // Disable Nagle's algorithm for lower latency
     http_connector.enforce_http(false);
-    http_connector.set_keepalive(Some(Duration::from_secs(90))); // Extended keepalive
+
+    // Use configured keepalive interval
+    http_connector.set_keepalive(Some(server.connection_pool.keepalive_interval()));
     http_connector.set_connect_timeout(Some(Duration::from_secs(10))); // Connection timeout
 
     let connector = HttpsConnectorBuilder::new()
@@ -57,11 +59,14 @@ pub fn build_client(_server: &ServerConfig) -> HyperClient {
         .enable_http2()
         .wrap_connector(http_connector);
 
+    // Determine if HTTP/2 should be enforced
+    let http2_only = !server.streaming.enable_http2;
+
     hyper_util::client::legacy::Client::builder(TokioExecutor::new())
-        .http2_only(false)
-        // Connection pool settings optimized for proxy workloads
-        .pool_idle_timeout(Duration::from_secs(120)) // Longer idle for reuse
-        .pool_max_idle_per_host(64) // Balanced pool size (was 128, too aggressive)
+        .http2_only(http2_only)
+        // Connection pool settings from configuration
+        .pool_idle_timeout(server.connection_pool.idle_timeout())
+        .pool_max_idle_per_host(server.connection_pool.max_idle_per_host)
         // HTTP/2 window sizes for large file transfers
         .http2_initial_stream_window_size(2 * 1024 * 1024) // 2MB stream window
         .http2_initial_connection_window_size(8 * 1024 * 1024) // 8MB connection window
