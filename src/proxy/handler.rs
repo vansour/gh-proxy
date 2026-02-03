@@ -15,8 +15,8 @@ use crate::errors::{ProxyError, ProxyResult, error_response};
 use crate::infra;
 use crate::middleware::{RequestLifecycle, RequestPermitGuard};
 use crate::proxy::headers::{
-    add_vary_header, apply_cloudflare_cache_headers, apply_github_headers, fix_content_type_header,
-    sanitize_request_headers, sanitize_response_headers,
+    add_vary_header, apply_github_headers, fix_content_type_header, sanitize_request_headers,
+    sanitize_response_headers,
 };
 use crate::proxy::resolver::{
     resolve_target_uri_with_validation, should_disable_compression_for_request,
@@ -43,7 +43,6 @@ fn get_client_ip(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Get client country from Cloudflare header.
 fn get_client_country(headers: &HeaderMap) -> Option<String> {
     headers
         .get("cf-ipcountry")
@@ -381,7 +380,7 @@ pub async fn proxy_request(
 
         sanitize_response_headers(&mut parts.headers, true, true, true);
         fix_content_type_header(&mut parts.headers, &target_uri);
-        apply_cloudflare_cache_headers(&mut parts.headers, &target_uri);
+
         add_vary_header(&mut parts.headers);
         parts.headers.remove(header::CONTENT_LENGTH);
 
@@ -400,6 +399,7 @@ pub async fn proxy_request(
             size_limit_mb,
             permit_guard.take_start_time(),
             permit_guard.take_permit(),
+            state.settings.shell.editor,
         );
 
         return Ok(Response::from_parts(
@@ -410,7 +410,7 @@ pub async fn proxy_request(
 
     sanitize_response_headers(&mut parts.headers, false, false, false);
     fix_content_type_header(&mut parts.headers, &target_uri);
-    apply_cloudflare_cache_headers(&mut parts.headers, &target_uri);
+
     add_vary_header(&mut parts.headers);
 
     let streaming_body = ProxyBodyStream::new(
@@ -422,6 +422,7 @@ pub async fn proxy_request(
         size_limit_mb,
         permit_guard.take_start_time(),
         permit_guard.take_permit(),
+        state.settings.shell.editor,
     );
 
     Ok(Response::from_parts(

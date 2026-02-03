@@ -17,7 +17,6 @@
 - **Prometheus 指标**: 丰富的监控指标（按状态码、方法、路径类型分类）
 - **graceful shutdown**: 优雅关闭，确保请求完成
 - **日志系统**: 完整的日志记录和追踪功能
-- **Cloudflare 集成**: 支持 Cloudflare CDN，自动识别真实客户端 IP
 - **Docker 支持**: 开箱即用的 Docker 部署
 - **Docker Registry 代理**: 集成 Docker Registry V2 代理，支持 /v2/* 路径
 
@@ -85,10 +84,6 @@ token = ""                     # GitHub API token（可选）
 
 [registry]
 default = "registry-1.docker.io"
-
-[cloudflare]
-zone_id = ""                   # Cloudflare Zone ID（可选）
-api_token = ""                 # Cloudflare API Token（可选）
 ```
 
 > **注意**: 配置字段使用 `snake_case` 命名，同时兼容旧版 `camelCase`（如 `sizeLimit`）。
@@ -147,8 +142,7 @@ gh-proxy/
 │   │   └── registry.rs      # Docker Registry 代理
 │   ├── services/            # 业务服务
 │   │   ├── client.rs        # HTTP 客户端 (hyper)
-│   │   ├── cloudflare.rs    # Cloudflare 集成
-│   │   ├── shutdown.rs      # 优雅关闭
+│   ├── shutdown.rs      # 优雅关闭
 │   │   └── text_processor.rs
 │   └── infra/               # 基础设施
 │       ├── log.rs           # 日志

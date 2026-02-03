@@ -25,8 +25,6 @@ pub struct HealthStatus {
 /// Individual health checks for sub-systems
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthChecks {
-    /// Cloudflare integration status
-    pub cloudflare: CheckStatus,
     /// Docker registry status
     pub registry: CheckStatus,
 }
@@ -48,16 +46,6 @@ pub struct CheckStatus {
 pub async fn health_liveness(State(state): State<AppState>) -> (StatusCode, Json<HealthStatus>) {
     let is_alive = state.shutdown_manager.is_alive().await;
 
-    // Determine Cloudflare status
-    let cf_status = CheckStatus {
-        healthy: state.cloudflare_service.is_enabled(),
-        message: if state.cloudflare_service.is_enabled() {
-            Some("Enabled".to_string())
-        } else {
-            Some("Disabled (no credentials)".to_string())
-        },
-    };
-
     // Determine registry status
     let registry_status = CheckStatus {
         healthy: state.docker_proxy.is_some(),
@@ -74,7 +62,6 @@ pub async fn health_liveness(State(state): State<AppState>) -> (StatusCode, Json
         uptime_secs: state.uptime_tracker.uptime_secs(),
         accepting_requests: state.shutdown_manager.should_accept_request(),
         checks: Some(HealthChecks {
-            cloudflare: cf_status,
             registry: registry_status,
         }),
     };

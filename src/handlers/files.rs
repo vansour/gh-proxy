@@ -11,7 +11,6 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use tracing::error;
 
-/// Static file cache headers for Cloudflare CDN optimization
 const STATIC_CACHE_CONTROL: &str = "public, max-age=86400, immutable";
 
 /// Cached static file with computed ETag

@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting gh-proxy server");
     info!("Log level: {}", settings.log.get_level());
 
-    if settings.shell.is_editor_enabled() {
+    if settings.shell.editor {
         info!("Shell editor mode enabled");
     }
     info!("CORS: Enabled (allowing all origins)");
@@ -69,15 +69,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.server.max_concurrent_requests as usize,
     ));
 
-    // Initialize services (using shared hyper client)
-    let cloudflare_service = Arc::new(services::cloudflare::CloudflareService::new(
-        client.clone(),
-        settings.cloudflare.clone(),
-    ));
-    if cloudflare_service.is_enabled() {
-        info!("Cloudflare analytics integration enabled");
-    }
-
     // Create docker proxy with client clone before moving client
     let docker_proxy = Some(Arc::new(providers::registry::DockerProxy::new(
         client.clone(),
@@ -100,7 +91,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_header,
         docker_proxy,
         download_semaphore,
-        cloudflare_service,
         rate_limiter,
     };
 

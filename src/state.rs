@@ -2,9 +2,7 @@
 
 use crate::config::{GitHubConfig, Settings};
 use crate::middleware::RateLimiter;
-use crate::services::{
-    cloudflare::CloudflareService, shutdown::ShutdownManager, shutdown::UptimeTracker,
-};
+use crate::services::{shutdown::ShutdownManager, shutdown::UptimeTracker};
 use axum::body::Body;
 use http::header::HeaderValue;
 use hyper_util::client::legacy::Client;
@@ -26,7 +24,7 @@ pub struct AppState {
     pub auth_header: Option<HeaderValue>,
     pub docker_proxy: Option<Arc<crate::providers::registry::DockerProxy>>,
     pub download_semaphore: Arc<Semaphore>,
-    pub cloudflare_service: Arc<CloudflareService>,
+
     pub rate_limiter: Arc<RateLimiter>,
 }
 

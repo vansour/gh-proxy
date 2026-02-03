@@ -1,6 +1,6 @@
 [package]
 name = "gh-proxy"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 [dependencies]
 axum = { version = "0.8.6", features = ["http1", "http2"] }

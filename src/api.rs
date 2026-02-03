@@ -1,7 +1,6 @@
 //! API endpoints for configuration and statistics.
 
 use crate::infra::metrics;
-use crate::services::cloudflare::CloudflareStats;
 use crate::state::AppState;
 use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
@@ -52,9 +51,6 @@ pub async fn get_config(State(state): State<AppState>) -> Result<Json<ConfigResp
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StatsResponse {
-    /// Cloudflare CDN statistics (if enabled)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cloudflare: Option<CloudflareStats>,
     /// Server-side metrics
     pub server: ServerStats,
 }
@@ -75,8 +71,6 @@ pub struct ServerStats {
 
 /// Get server and CDN statistics
 pub async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
-    let cf_stats = state.cloudflare_service.get_stats().await;
-
     let server_stats = ServerStats {
         total_requests: metrics::HTTP_REQUESTS_TOTAL.get(),
         active_requests: metrics::HTTP_ACTIVE_REQUESTS.get(),
@@ -86,7 +80,6 @@ pub async fn get_stats(State(state): State<AppState>) -> Json<StatsResponse> {
     };
 
     let stats = StatsResponse {
-        cloudflare: cf_stats,
         server: server_stats,
     };
 

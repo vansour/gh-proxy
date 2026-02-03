@@ -23,17 +23,15 @@ pub struct Settings {
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
-    pub proxy: ProxyConfig,
-    #[serde(default)]
-    pub registry: RegistryConfig,
-    #[serde(default)]
     pub shell: ShellConfig,
     #[serde(default)]
     pub log: LogConfig,
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
-    pub cloudflare: CloudflareConfig,
+    pub registry: RegistryConfig,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
 }
 
 impl Settings {
@@ -51,28 +49,9 @@ impl Settings {
     pub fn validate(&mut self) -> Result<(), ConfigError> {
         self.server.finalize();
         self.server.validate()?;
-        self.proxy.validate()?;
         self.log.validate()?;
+        self.proxy.validate()?;
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct CloudflareConfig {
-    #[serde(alias = "zoneId")]
-    pub zone_id: String,
-    #[serde(alias = "apiToken")]
-    pub api_token: String,
-    #[serde(alias = "enableCacheStatus")]
-    pub enable_cache_status: bool,
-    #[serde(alias = "enableSmartRouting")]
-    pub enable_smart_routing: bool,
-}
-
-impl CloudflareConfig {
-    pub fn is_enabled(&self) -> bool {
-        !self.zone_id.is_empty() && !self.api_token.is_empty()
     }
 }
 
@@ -96,30 +75,13 @@ impl Default for ProxyConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct RegistryConfig {
-    #[serde(rename = "default")]
-    pub default: String,
-}
-
-impl Default for RegistryConfig {
-    fn default() -> Self {
-        Self {
-            default: "docker.io".to_string(),
-        }
-    }
-}
-
 impl ProxyConfig {
     pub fn validate(&mut self) -> Result<(), ConfigError> {
         let mut normalized = Vec::with_capacity(self.allowed_hosts.len());
         for entry in self.allowed_hosts.iter() {
             let pattern = entry.trim();
             if pattern.is_empty() {
-                return Err(ConfigError::Validation(
-                    "proxy.allowedHosts cannot include empty values".to_string(),
-                ));
+                continue;
             }
             HostPattern::parse(pattern).map_err(|err| {
                 ConfigError::Validation(format!(
@@ -216,44 +178,6 @@ impl HostPattern {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct ConnectionPoolConfig {
-    #[serde(alias = "maxIdlePerHost")]
-    pub max_idle_per_host: usize,
-    #[serde(alias = "idleTimeoutSecs")]
-    pub idle_timeout_secs: u64,
-    #[serde(alias = "keepaliveIntervalSecs")]
-    pub keepalive_interval_secs: u64,
-}
-
-impl ConnectionPoolConfig {
-    pub fn idle_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.idle_timeout_secs)
-    }
-
-    pub fn keepalive_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.keepalive_interval_secs)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct StreamingConfig {
-    #[serde(alias = "bufferSizeKb")]
-    pub buffer_size_kb: usize,
-    #[serde(alias = "enableChunkedTransfer")]
-    pub enable_chunked_transfer: bool,
-    #[serde(alias = "enableHttp2")]
-    pub enable_http2: bool,
-}
-
-impl StreamingConfig {
-    pub fn buffer_size(&self) -> usize {
-        self.buffer_size_kb * 1024
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
 pub struct RetryConfig {
     #[serde(alias = "maxAttempts")]
     pub max_attempts: u32,
@@ -264,20 +188,10 @@ pub struct RetryConfig {
 }
 
 impl RetryConfig {
-    pub fn base_delay(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(self.base_delay_ms)
-    }
-
-    pub fn max_delay(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(self.max_delay_ms)
-    }
-
     pub fn should_retry(&self, attempt: u32, error: &crate::errors::ProxyError) -> bool {
         if attempt >= self.max_attempts {
             return false;
         }
-
-        // 只重试特定类型的错误
         match error {
             crate::errors::ProxyError::Http(_) => true,
             crate::errors::ProxyError::ProcessingError(msg) if msg.contains("timeout") => true,
@@ -293,23 +207,6 @@ impl RetryConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct CircuitBreakerConfig {
-    #[serde(alias = "failureThreshold")]
-    pub failure_threshold: u32,
-    #[serde(alias = "recoveryTimeoutSecs")]
-    pub recovery_timeout_secs: u64,
-    #[serde(alias = "halfOpenMaxAttempts")]
-    pub half_open_max_attempts: u32,
-}
-
-impl CircuitBreakerConfig {
-    pub fn recovery_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.recovery_timeout_secs)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -319,22 +216,12 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     #[serde(alias = "maxConcurrentRequests")]
     pub max_concurrent_requests: u32,
-    #[serde(alias = "permitAcquireTimeoutSecs")]
-    pub permit_acquire_timeout_secs: u64,
     #[serde(alias = "requestSizeLimit")]
     pub request_size_limit: u64,
     #[serde(alias = "rateLimitPerMin")]
     pub rate_limit_per_min: u64,
-    #[serde(alias = "staticDir")]
-    pub static_dir: String,
-    #[serde(alias = "connectionPool")]
-    pub connection_pool: ConnectionPoolConfig,
-    #[serde(alias = "streaming")]
-    pub streaming: StreamingConfig,
-    #[serde(alias = "retry")]
+    #[serde(default)]
     pub retry: RetryConfig,
-    #[serde(alias = "circuitBreaker")]
-    pub circuit_breaker: CircuitBreakerConfig,
 }
 
 impl ServerConfig {
@@ -342,24 +229,17 @@ impl ServerConfig {
         if self.host.is_empty() {
             self.host = "0.0.0.0".to_string();
         }
+        if self.port == 0 {
+            self.port = 8080;
+        }
     }
     pub fn bind_addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.port == 0 {
-            return Err(ConfigError::Validation(
-                "server.port cannot be 0".to_string(),
-            ));
-        }
         if self.size_limit == 0 {
             return Err(ConfigError::Validation(
                 "server.sizeLimit must be at least 1 MB".to_string(),
-            ));
-        }
-        if self.request_size_limit == 0 {
-            return Err(ConfigError::Validation(
-                "server.requestSizeLimit must be at least 1 MB".to_string(),
             ));
         }
         Ok(())
@@ -372,24 +252,15 @@ pub struct ShellConfig {
     pub editor: bool,
 }
 
-impl ShellConfig {
-    pub fn is_editor_enabled(&self) -> bool {
-        self.editor
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LogConfig {
-    #[serde(alias = "logFilePath")]
-    pub log_file_path: String,
     pub level: String,
 }
 
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
-            log_file_path: "/app/log/ghproxy.log".to_string(),
             level: "info".to_string(),
         }
     }
@@ -404,7 +275,7 @@ impl LogConfig {
             "debug" | "info" | "warn" | "error" | "trace" | "none" => {}
             _ => {
                 return Err(ConfigError::Validation(format!(
-                    "Invalid log level '{}'. Valid values: debug, info, warn, error, trace, none",
+                    "Invalid log level '{}'",
                     self.level
                 )));
             }
@@ -420,28 +291,24 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
-    pub fn has_token(&self) -> bool {
-        !self.token.trim().is_empty()
-    }
-
     pub fn authorization_header(
         &self,
     ) -> Result<Option<HeaderValue>, http::header::InvalidHeaderValue> {
-        if !self.has_token() {
-            return Ok(None);
-        }
-
         let token = self.token.trim();
         if token.is_empty() {
             return Ok(None);
         }
-
         let mut value = String::with_capacity(token.len() + 6);
         value.push_str("token ");
         value.push_str(token);
-
         HeaderValue::from_str(&value).map(Some)
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct RegistryConfig {
+    pub default: String,
 }
 
 pub struct GitHubConfig {
