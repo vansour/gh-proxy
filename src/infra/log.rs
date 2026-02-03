@@ -1,6 +1,6 @@
+use time::macros::format_description;
 use tracing_subscriber::fmt::time::LocalTime;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
-use time::macros::format_description;
 
 pub fn setup_tracing(log_config: &crate::config::LogConfig) {
     let filter = EnvFilter::try_from_default_env()
