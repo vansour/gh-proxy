@@ -8,10 +8,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
-  test:
-    name: Test
+  backend-test:
+    name: Backend Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,10 +36,40 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
           
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Run backend tests
+        run: cargo test --locked --verbose -p gh-proxy
+
+  frontend-test:
+    name: Frontend Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
+
+      - name: Run frontend tests
+        run: cargo test --locked --verbose -p gh-proxy-frontend
 
   fmt:
     name: Format
@@ -51,7 +82,7 @@ jobs:
         with:
           components: rustfmt
           
-      - name: Check formatting
+      - name: Check workspace formatting
         run: cargo fmt --all -- --check
 
   clippy:
@@ -81,10 +112,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
           
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run backend clippy
+        run: cargo clippy --locked -p gh-proxy --all-targets --all-features -- -D warnings
+
+      - name: Run frontend clippy
+        run: cargo clippy --locked -p gh-proxy-frontend --all-targets --all-features -- -D warnings
 
   build:
     name: Build
@@ -94,7 +128,27 @@ jobs:
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Dioxus CLI
+        run: |
+          set -euxo pipefail
+          DX_VERSION=0.7.3
+          case "$(uname -m)" in
+            x86_64) dx_target="x86_64-unknown-linux-gnu" ;;
+            aarch64|arm64) dx_target="aarch64-unknown-linux-gnu" ;;
+            *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSLO "https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VERSION}/dx-${dx_target}.tar.gz"
+          curl -fsSLO "https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VERSION}/dx-${dx_target}.sha256"
+          grep "dx-${dx_target}.tar.gz" "dx-${dx_target}.sha256" | sha256sum -c -
+          tar -xzf "dx-${dx_target}.tar.gz" -C "$HOME/.local/bin" dx
+          chmod +x "$HOME/.local/bin/dx"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -111,7 +165,75 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
+
+      - name: Build frontend bundle
+        working-directory: frontend/dioxus-app
+        run: dx build --release --debug-symbols false
           
-      - name: Build
-        run: cargo build --release --verbose
+      - name: Build backend
+        run: cargo build --locked --release --verbose -p gh-proxy
+
+  docker-smoke:
+    name: Docker Smoke
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-test, fmt, clippy, build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image and run smoke test
+        run: bash docker/smoke-test.sh
+
+  audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: Run cargo deny
+        run: cargo deny check bans licenses sources

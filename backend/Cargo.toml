@@ -1,0 +1,49 @@
+[package]
+name = "gh-proxy"
+version = "1.2.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/vansour/gh-proxy"
+
+[dependencies]
+axum = { version = "0.8.8", features = ["http1", "http2"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "signal", "fs"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.0.4"
+tracing = "0.1.44"
+tracing-appender = "0.2.4"
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter", "local-time"] }
+thiserror = "2.0.18"
+http = "1.4.0"
+http-body-util = "0.1.3"
+futures-util = "0.3.32"
+uuid = { version = "1.22.0", features = ["v4", "serde"] }
+urlencoding = "2.1.3"
+tokio-util = { version = "0.7.18", features = ["io"] }
+async-compression = { version = "0.4.41", features = ["tokio", "gzip", "brotli"] }
+hyper = { version = "1.8.1", features = ["http1", "http2", "client"] }
+hyper-util = { version = "0.1.20", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "http2", "webpki-roots", "ring"] }
+tower-http = { version = "0.6.8", features = ["trace", "fs", "cors", "compression-gzip", "compression-br"] }
+regex = "1.12.3"
+bytes = "1.11.1"
+notify = "8.2.0"
+prometheus = "0.14.0"
+once_cell = "1.21.3"
+aho-corasick = "1.1.4"
+chrono = { version = "0.4.44", features = ["serde"] }
+time = { version = "0.3.47", features = ["macros", "formatting"] }
+moka = { version = "0.12.14", features = ["sync", "future"] }
+dashmap = "6.1.0"
+clap = { version = "4.5.0", features = ["derive"] }
+parking_lot = "0.12.1"
+
+# Memory allocation optimization
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6.1", features = ["stats"] }
+
+[dev-dependencies]
+criterion = "0.5.0"
+tokio-test = "0.4.2"
+tower = "0.5.2"

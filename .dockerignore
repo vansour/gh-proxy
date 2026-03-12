@@ -1,4 +1,6 @@
 target/
+**/target/
+**/.rustc_info.json
 .git/
 .gitignore
 README.md

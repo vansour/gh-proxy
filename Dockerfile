@@ -1,21 +1,49 @@
-FROM ghcr.io/vansour/rust:trixie AS builder
+FROM rust:latest@sha256:0e6da0c8f06f25e9591f21c0f741cd4ff1086e271c3330f29f6e4e95869c7843 AS builder
+
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
 
-# Install build dependencies including make
-# 'build-essential' includes gcc, g++, make, etc. required for tikv-jemalloc-sys
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    make \
+ARG TARGETARCH
+ARG DX_VERSION=0.7.3
+ENV CARGO_TARGET_DIR=/app/target
+
+# 下载预编译 Dioxus CLI 并构建前端
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+RUN case "${TARGETARCH}" in \
+        amd64) dx_target="x86_64-unknown-linux-gnu" ;; \
+        arm64) dx_target="aarch64-unknown-linux-gnu" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSLO "https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VERSION}/dx-${dx_target}.tar.gz" \
+    && curl -fsSLO "https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VERSION}/dx-${dx_target}.sha256" \
+    && grep "dx-${dx_target}.tar.gz" "dx-${dx_target}.sha256" | sha256sum -c - \
+    && tar -xzf "dx-${dx_target}.tar.gz" -C /usr/local/bin dx \
+    && chmod +x /usr/local/bin/dx \
+    && rm -f "dx-${dx_target}.tar.gz" "dx-${dx_target}.sha256"
+RUN rustup target add wasm32-unknown-unknown
+COPY Cargo.toml Cargo.lock /app/
+COPY backend/Cargo.toml /app/backend/Cargo.toml
+COPY backend/src /app/backend/src
+COPY frontend/dioxus-app/Cargo.toml /app/frontend/dioxus-app/Cargo.toml
+COPY frontend/dioxus-app/Dioxus.toml /app/frontend/dioxus-app/Dioxus.toml
+COPY frontend/dioxus-app /app/frontend/dioxus-app
+WORKDIR /app/frontend/dioxus-app
+RUN dx build --release --debug-symbols false
 
-RUN cargo build --release && strip target/release/gh-proxy
+WORKDIR /app
+# 复制后端源码
+COPY backend /app/backend
 
-# Revert to the requested Debian base image
-FROM ghcr.io/vansour/debian:trixie-slim
+# 构建后端
+RUN cargo build --locked --release -p gh-proxy
 
-# Install runtime dependencies
+# 最终镜像
+FROM debian:trixie-slim@sha256:1d3c811171a08a5adaa4a163fbafd96b61b87aa871bbc7aa15431ac275d3d430
+
+# 安装运行时依赖
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
@@ -27,28 +55,25 @@ ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 WORKDIR /app
-RUN mkdir -p /app/logs /app/.defaults/config
+RUN mkdir -p /app/logs /app/.defaults/config /app/web
 
-# Copy the binary
+# 复制后端二进制
 COPY --from=builder /app/target/release/gh-proxy /app/gh-proxy
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-# Copy static resources & config defaults
-COPY config /app/.defaults/config
-COPY config /app/config
-COPY web /app/web
+# 复制配置
+COPY backend/config /app/.defaults/config
 
-# Restore entrypoint script
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# 复制 Dioxus 构建产物
+COPY --from=builder /app/target/dx/gh-proxy-frontend/release/web/public/ /app/web/
 
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 
-# Restore healthcheck using curl
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD /usr/bin/curl -f http://localhost:8080/healthz || exit 1
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["/app/gh-proxy"]
+ENTRYPOINT ["/app/entrypoint.sh"]

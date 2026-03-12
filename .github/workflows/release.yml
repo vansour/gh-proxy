@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish, for example v1.2.1"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.event.inputs.release_tag || github.ref }}
+      cancel-in-progress: false
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      major: ${{ steps.release.outputs.major }}
+      major_minor: ${{ steps.release.outputs.major_minor }}
+      publish_latest: ${{ steps.release.outputs.publish_latest }}
+      publish_major: ${{ steps.release.outputs.publish_major }}
+      is_prerelease: ${{ steps.release.outputs.is_prerelease }}
+      image: ${{ steps.release.outputs.image }}
+    steps:
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ github.event.inputs.release_tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must match v<major>.<minor>.<patch>[-suffix], got: ${tag}" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+
+          publish_latest=true
+          publish_major=true
+          is_prerelease=false
+
+          if [[ "${version}" == *-* ]]; then
+            publish_latest=false
+            publish_major=false
+            is_prerelease=true
+          elif [[ "${major}" == "0" ]]; then
+            publish_major=false
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "major=${major}"
+            echo "major_minor=${major}.${minor}"
+            echo "publish_latest=${publish_latest}"
+            echo "publish_major=${publish_major}"
+            echo "is_prerelease=${is_prerelease}"
+            echo "image=${image}"
+          } >> "${GITHUB_OUTPUT}"
+
+  preflight:
+    name: Release Preflight
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Verify release tag matches workspace version
+        run: bash scripts/verify-release-version.sh "${{ needs.prepare.outputs.version }}"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run backend tests
+        run: cargo test --locked -q -p gh-proxy
+
+      - name: Run frontend tests
+        run: cargo test --locked -q -p gh-proxy-frontend
+
+      - name: Run Docker smoke test
+        run: bash docker/smoke-test.sh
+
+  publish-image:
+    name: Publish Image
+    runs-on: ubuntu-latest
+    needs: [prepare, preflight]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=${{ needs.prepare.outputs.major_minor }},enable=${{ needs.prepare.outputs.is_prerelease != 'true' }}
+            type=raw,value=${{ needs.prepare.outputs.major }},enable=${{ needs.prepare.outputs.publish_major == 'true' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.publish_latest == 'true' }}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=gh-proxy
+            org.opencontainers.image.description=Read-only GitHub and Docker Registry proxy with same-origin Web UI
+
+      - name: Build and publish multi-arch image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify published manifest list
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw_manifest="$(docker buildx imagetools inspect --raw "${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}")"
+          echo "${raw_manifest}" | jq -e '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")' >/dev/null
+          echo "${raw_manifest}" | jq -e '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")' >/dev/null
+
+      - name: Publish release summary
+        shell: bash
+        run: |
+          {
+            echo "## Release Published"
+            echo
+            echo "- Tag: \`${{ needs.prepare.outputs.tag }}\`"
+            echo "- Version: \`${{ needs.prepare.outputs.version }}\`"
+            echo "- Image: \`${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}\`"
+            echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
