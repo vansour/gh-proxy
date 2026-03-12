@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
   attestations: write
   id-token: write
@@ -109,6 +109,8 @@ jobs:
     name: Publish Image
     runs-on: ubuntu-latest
     needs: [prepare, preflight]
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -176,4 +178,82 @@ jobs:
             echo "- Version: \`${{ needs.prepare.outputs.version }}\`"
             echo "- Image: \`${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}\`"
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  publish-release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: [prepare, publish-image]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/generate-release-notes.sh \
+            "${{ needs.prepare.outputs.tag }}" \
+            "${{ needs.prepare.outputs.version }}" \
+            "${{ needs.prepare.outputs.image }}" \
+            "${{ needs.publish-image.outputs.digest }}" \
+            release-notes.md
+
+      - name: Create or update GitHub Release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.prepare.outputs.tag }}"
+          version="${{ needs.prepare.outputs.version }}"
+          prerelease="${{ needs.prepare.outputs.is_prerelease }}"
+          make_latest="false"
+
+          if [[ "${{ needs.prepare.outputs.publish_latest }}" == "true" ]]; then
+            make_latest="true"
+          fi
+
+          jq -n \
+            --arg tag_name "${tag}" \
+            --arg target_commitish "${tag}" \
+            --arg name "gh-proxy ${version}" \
+            --rawfile body release-notes.md \
+            --arg make_latest "${make_latest}" \
+            --argjson prerelease "${prerelease}" \
+            '{
+              tag_name: $tag_name,
+              target_commitish: $target_commitish,
+              name: $name,
+              body: $body,
+              draft: false,
+              prerelease: $prerelease,
+              make_latest: $make_latest
+            }' > release.json
+
+          if release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.id' 2>/dev/null)"; then
+            url="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --input release.json --jq '.html_url')"
+            state="updated"
+          else
+            url="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --input release.json --jq '.html_url')"
+            state="created"
+          fi
+
+          {
+            echo "url=${url}"
+            echo "state=${state}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Publish GitHub release summary
+        shell: bash
+        run: |
+          {
+            echo "## GitHub Release"
+            echo
+            echo "- State: \`${{ steps.release.outputs.state }}\`"
+            echo "- URL: ${{ steps.release.outputs.url }}"
           } >> "${GITHUB_STEP_SUMMARY}"

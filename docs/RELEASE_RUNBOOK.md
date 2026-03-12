@@ -33,11 +33,19 @@
 4. 构建并推送多架构 OCI 镜像到 `ghcr.io/<owner>/gh-proxy`。
 5. 为镜像生成 OCI labels、SBOM 与 provenance。
 6. 校验发布后的 manifest list 同时包含 `linux/amd64` 和 `linux/arm64`。
+7. 在镜像发布成功后自动创建或更新对应的 GitHub Release。
 
 发布 workflow 默认使用 `GITHUB_TOKEN` 推送 GHCR；如果 package 没有继承当前仓库权限，可额外配置以下 secrets 作为兜底：
 
 - `GHCR_USERNAME`：拥有目标 package 写权限的 GitHub 用户名。
 - `GHCR_TOKEN`：对应账户的 PAT，至少包含 `write:packages`，如需拉取校验可同时带 `read:packages`。
+
+GitHub Release 由 workflow 自动创建或更新，因此 workflow 需要 `contents: write`。Release 页面会包含完整发布说明，至少包括：
+
+- 版本、commit、镜像 digest 与 compare 链接。
+- 本次发布写入 GHCR 的全部镜像 tag。
+- 相对上一个版本 tag 的完整 commit 列表。
+- 文件级 diff summary，便于快速审阅改动范围。
 
 ## 4. 镜像 tag 策略
 
