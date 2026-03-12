@@ -26,100 +26,67 @@ const DEFAULT_ALLOWED_HOSTS: [&str; 4] = [
 #[component]
 pub fn Home() -> Element {
     let mut input_value = use_signal(String::new);
-    let current_format = use_signal(|| LinkFormat::Direct);
-    let allowed_hosts = use_signal(default_allowed_hosts);
-    let input_error = use_signal(String::new);
-    let output = use_signal(String::new);
-    let show_result = use_signal(|| false);
-    let open_in_browser_enabled = use_signal(|| false);
+    let mut current_format = use_signal(|| LinkFormat::Direct);
+    let mut allowed_hosts = use_signal(default_allowed_hosts);
+    let mut input_error = use_signal(String::new);
+    let mut output = use_signal(String::new);
+    let mut show_result = use_signal(|| false);
+    let mut open_in_browser_enabled = use_signal(|| false);
     let toast_visible = use_signal(|| false);
     let toast_message = use_signal(|| "已成功复制".to_string());
 
-    let _config_task = use_future(move || {
-        let mut allowed_hosts = allowed_hosts;
-        let input_value = input_value;
-        let current_format = current_format;
-        let output = output;
-        let show_result = show_result;
-        let open_in_browser_enabled = open_in_browser_enabled;
-        let input_error = input_error;
+    let _config_task = use_future(move || async move {
+        if let Ok(config) = fetch_config().await {
+            let hosts = config.proxy.allowed_hosts;
+            allowed_hosts.set(hosts.clone());
 
-        async move {
-            if let Ok(config) = fetch_config().await {
-                let hosts = config.proxy.allowed_hosts;
-                allowed_hosts.set(hosts.clone());
-
-                let raw_url = input_value.read().to_string();
-                if !raw_url.trim().is_empty() {
-                    apply_output_state(
-                        &raw_url,
-                        *current_format.read(),
-                        &hosts,
-                        output,
-                        show_result,
-                        open_in_browser_enabled,
-                        input_error,
-                    );
-                }
+            let raw_url = input_value.read().to_string();
+            if !raw_url.trim().is_empty() {
+                apply_output_state(
+                    &raw_url,
+                    *current_format.read(),
+                    &hosts,
+                    output,
+                    show_result,
+                    open_in_browser_enabled,
+                    input_error,
+                );
             }
         }
     });
 
-    let apply_output = {
-        let output = output;
-        let show_result = show_result;
-        let open_in_browser_enabled = open_in_browser_enabled;
-        let input_error = input_error;
-        let allowed_hosts = allowed_hosts;
+    let apply_output = move |format_override: Option<LinkFormat>| {
+        let raw_url = input_value.read().to_string();
+        let format = format_override.unwrap_or(*current_format.read());
+        let allowed_hosts = allowed_hosts.read().clone();
 
-        move |format_override: Option<LinkFormat>| {
-            let raw_url = input_value.read().to_string();
-            let format = format_override.unwrap_or(*current_format.read());
-            let allowed_hosts = allowed_hosts.read().clone();
-
-            apply_output_state(
-                &raw_url,
-                format,
-                &allowed_hosts,
-                output,
-                show_result,
-                open_in_browser_enabled,
-                input_error,
-            );
-        }
+        apply_output_state(
+            &raw_url,
+            format,
+            &allowed_hosts,
+            output,
+            show_result,
+            open_in_browser_enabled,
+            input_error,
+        );
     };
 
-    let mut on_generate = {
-        let apply_output = apply_output;
-        let input_value = input_value;
-        let mut output = output;
-        let mut show_result = show_result;
-        let mut open_in_browser_enabled = open_in_browser_enabled;
-        let mut input_error = input_error;
-
-        move |_| {
-            if input_value.read().trim().is_empty() {
-                output.set(String::new());
-                open_in_browser_enabled.set(false);
-                show_result.set(false);
-                input_error.set(String::new());
-                return;
-            }
-
-            apply_output(None);
+    let mut on_generate = move |_| {
+        if input_value.read().trim().is_empty() {
+            output.set(String::new());
+            open_in_browser_enabled.set(false);
+            show_result.set(false);
+            input_error.set(String::new());
+            return;
         }
+
+        apply_output(None);
     };
 
-    let on_tab_change = {
-        let apply_output = apply_output;
-        let mut current_format = current_format;
-        let input_value = input_value;
-
-        move |format| {
-            current_format.set(format);
-            if !input_value.read().trim().is_empty() {
-                apply_output(Some(format));
-            }
+    let on_tab_change = move |format| {
+        current_format.set(format);
+        if !input_value.read().trim().is_empty() {
+            apply_output(Some(format));
         }
     };
 
@@ -429,12 +396,11 @@ impl AllowedHostPattern {
     fn matches(&self, host: &str) -> bool {
         match self.kind {
             AllowedHostKind::Exact => host == self.value,
-            AllowedHostKind::Suffix => {
-                self.suffix
-                    .as_ref()
-                    .map(|suffix| host.ends_with(suffix))
-                    .unwrap_or(false)
-            }
+            AllowedHostKind::Suffix => self
+                .suffix
+                .as_ref()
+                .map(|suffix| host.ends_with(suffix))
+                .unwrap_or(false),
         }
     }
 }
@@ -596,7 +562,10 @@ mod tests {
         use super::build_docker_output;
 
         let res = build_docker_output("library/nginx:latest", "proxy.com").unwrap();
-        assert!(res.text.contains("docker pull proxy.com/library/nginx:latest"));
+        assert!(
+            res.text
+                .contains("docker pull proxy.com/library/nginx:latest")
+        );
         assert!(!res.is_url);
 
         let err = build_docker_output("  ", "proxy.com").unwrap_err();

@@ -79,10 +79,7 @@ impl Stream for ProxyBodyStream {
             Poll::Ready(Some(Ok(mut chunk))) => {
                 let chunk_len = chunk.len();
                 if chunk_len > 1024 * 1024 {
-                    tracing::debug!(
-                        "Handling large upstream chunk: {} bytes",
-                        chunk_len
-                    );
+                    tracing::debug!("Handling large upstream chunk: {} bytes", chunk_len);
                 }
 
                 // 统一使用 256KB 切分，不再区分 CDN 模式

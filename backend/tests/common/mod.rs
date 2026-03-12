@@ -22,6 +22,7 @@ pub fn setup() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 }
 
+#[allow(dead_code)]
 pub struct TestServer {
     pub base_url: String,
     handle: JoinHandle<()>,
@@ -104,6 +105,7 @@ pub fn build_state(mut settings: Settings) -> AppState {
     }
 }
 
+#[allow(dead_code)]
 pub async fn spawn_app(state: AppState) -> TestServer {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -127,6 +129,7 @@ pub async fn spawn_app(state: AppState) -> TestServer {
     }
 }
 
+#[allow(dead_code)]
 pub async fn spawn_mock(router: Router) -> TestServer {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -145,6 +148,7 @@ pub async fn spawn_mock(router: Router) -> TestServer {
     }
 }
 
+#[allow(dead_code)]
 pub async fn get(url: &str) -> (hyper::StatusCode, hyper::HeaderMap, bytes::Bytes) {
     let client = build_client(&ServerConfig {
         host: "127.0.0.1".to_string(),
@@ -159,6 +163,7 @@ pub async fn get(url: &str) -> (hyper::StatusCode, hyper::HeaderMap, bytes::Byte
     get_bytes(&client, url, None, 5).await.expect("GET request")
 }
 
+#[allow(dead_code)]
 pub async fn request(
     method: hyper::Method,
     url: &str,
@@ -166,6 +171,7 @@ pub async fn request(
     request_with_headers(method, url, &[]).await
 }
 
+#[allow(dead_code)]
 pub async fn request_with_headers(
     method: hyper::Method,
     url: &str,

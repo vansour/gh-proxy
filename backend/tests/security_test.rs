@@ -4,7 +4,7 @@ mod common;
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
 use gh_proxy::router;
 use http_body_util::BodyExt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -18,7 +18,7 @@ async fn test_ingress_guard_rejects_mismatched_remote_host() {
     settings.shell.public_base_url = "https://proxy.example.com".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    
+
     // Simulate a remote client (non-loopback)
     let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
 
@@ -53,7 +53,7 @@ async fn test_ingress_guard_allows_loopback_regardless_of_host() {
     settings.shell.public_base_url = "https://proxy.example.com".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    
+
     // Simulate a loopback client
     let loopback_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
 
@@ -77,7 +77,7 @@ async fn test_origin_auth_blocks_unauthorized_remote_requests() {
     settings.ingress.auth_header_value = "super-secret".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    
+
     let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
 
     // Missing header
@@ -112,7 +112,7 @@ async fn test_origin_auth_allows_authorized_remote_requests() {
     settings.ingress.auth_header_value = "super-secret".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    
+
     let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
 
     let mut request = axum::http::Request::builder()
