@@ -23,7 +23,7 @@ pub struct AppState {
     pub shutdown_manager: ShutdownManager,
     pub uptime_tracker: Arc<UptimeTracker>,
     pub auth_header: Option<HeaderValue>,
-    pub docker_proxy: Option<Arc<crate::providers::registry::DockerProxy>>,
+    pub docker_proxy: Arc<crate::providers::registry::DockerProxy>,
     pub download_semaphore: Arc<Semaphore>,
     pub rate_limiter: Arc<RateLimiter>,
     pub cache_manager: Arc<CacheManager>,

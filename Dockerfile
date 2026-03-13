@@ -4,7 +4,10 @@ WORKDIR /app
 
 ARG TARGETARCH
 ARG DX_VERSION=0.7.3
+ARG RUST_TOOLCHAIN=1.93.0
 ENV CARGO_TARGET_DIR=/app/target
+
+COPY rust-toolchain.toml /app/rust-toolchain.toml
 
 # 下载预编译 Dioxus CLI 并构建前端
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -23,14 +26,15 @@ RUN case "${TARGETARCH}" in \
     && tar -xzf "dx-${dx_target}.tar.gz" -C /usr/local/bin dx \
     && chmod +x /usr/local/bin/dx \
     && rm -f "dx-${dx_target}.tar.gz" "dx-${dx_target}.sha256"
-RUN rustup target add wasm32-unknown-unknown
+RUN rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component clippy --component rustfmt \
+    && rustup target add wasm32-unknown-unknown --toolchain "${RUST_TOOLCHAIN}"
 COPY Cargo.toml Cargo.lock /app/
 COPY backend/Cargo.toml /app/backend/Cargo.toml
 COPY backend/src /app/backend/src
-COPY frontend/dioxus-app/Cargo.toml /app/frontend/dioxus-app/Cargo.toml
-COPY frontend/dioxus-app/Dioxus.toml /app/frontend/dioxus-app/Dioxus.toml
-COPY frontend/dioxus-app /app/frontend/dioxus-app
-WORKDIR /app/frontend/dioxus-app
+COPY frontend/Cargo.toml /app/frontend/Cargo.toml
+COPY frontend/Dioxus.toml /app/frontend/Dioxus.toml
+COPY frontend /app/frontend
+WORKDIR /app/frontend
 RUN dx build --release --debug-symbols false
 
 WORKDIR /app

@@ -14,7 +14,7 @@ extract_version() {
 
 workspace_version="$(extract_version Cargo.toml)"
 backend_version="$(extract_version backend/Cargo.toml)"
-frontend_version="$(extract_version frontend/dioxus-app/Cargo.toml)"
+frontend_version="$(extract_version frontend/Cargo.toml)"
 
 if [[ -z "${workspace_version}" || -z "${backend_version}" || -z "${frontend_version}" ]]; then
   echo "failed to extract one or more package versions" >&2

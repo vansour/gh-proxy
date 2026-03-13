@@ -2,6 +2,8 @@
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::Request;
 use gh_proxy::cache::config::{CacheConfig, CacheStrategy};
 use gh_proxy::cache::manager::CacheManager;
 use gh_proxy::config::{
@@ -13,10 +15,12 @@ use gh_proxy::providers::registry::DockerProxy;
 use gh_proxy::services::client::{build_client, get_bytes};
 use gh_proxy::services::shutdown::{ShutdownManager, UptimeTracker};
 use gh_proxy::{AppState, router};
+use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
+use tower::ServiceExt;
 
 pub fn setup() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
@@ -93,7 +97,7 @@ pub fn build_state(mut settings: Settings) -> AppState {
         shutdown_manager: ShutdownManager::new(),
         uptime_tracker: Arc::new(UptimeTracker::new()),
         auth_header,
-        docker_proxy: Some(Arc::new(DockerProxy::new(client, &settings.registry))),
+        docker_proxy: Arc::new(DockerProxy::new(client, &settings.registry)),
         download_semaphore: Arc::new(Semaphore::new(
             settings.server.max_concurrent_requests as usize,
         )),
@@ -149,6 +153,16 @@ pub async fn spawn_mock(router: Router) -> TestServer {
 }
 
 #[allow(dead_code)]
+pub fn loopback_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 12345))
+}
+
+#[allow(dead_code)]
+pub fn remote_addr() -> SocketAddr {
+    SocketAddr::from(([198, 51, 100, 10], 443))
+}
+
+#[allow(dead_code)]
 pub async fn get(url: &str) -> (hyper::StatusCode, hyper::HeaderMap, bytes::Bytes) {
     let client = build_client(&ServerConfig {
         host: "127.0.0.1".to_string(),
@@ -197,7 +211,47 @@ pub async fn request_with_headers(
     let response = client.request(request).await.expect("request send");
     let status = response.status();
     let headers = response.headers().clone();
-    let body = http_body_util::BodyExt::collect(response.into_body())
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("read response body")
+        .to_bytes();
+
+    (status, headers, body)
+}
+
+#[allow(dead_code)]
+pub async fn router_request(
+    app: Router,
+    method: hyper::Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+    remote_addr: Option<SocketAddr>,
+) -> (hyper::StatusCode, hyper::HeaderMap, bytes::Bytes) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let mut request = builder.body(Body::empty()).expect("request build");
+    if let Some(remote_addr) = remote_addr {
+        request.extensions_mut().insert(ConnectInfo(remote_addr));
+    }
+
+    router_request_raw(app, request).await
+}
+
+#[allow(dead_code)]
+pub async fn router_request_raw(
+    app: Router,
+    request: Request<Body>,
+) -> (hyper::StatusCode, hyper::HeaderMap, bytes::Bytes) {
+    let response = app.oneshot(request).await.expect("response");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response
+        .into_body()
+        .collect()
         .await
         .expect("read response body")
         .to_bytes();

@@ -71,22 +71,14 @@ pub async fn health_liveness(State(state): State<AppState>) -> (StatusCode, Json
 /// and reported in the JSON body, and can optionally participate in readiness
 /// via `registry.readiness_depends_on_registry`.
 pub async fn health_readiness(State(state): State<AppState>) -> (StatusCode, Json<HealthStatus>) {
-    let registry_status = match &state.docker_proxy {
-        Some(proxy) => {
-            let healthy = proxy.check_registry_health().await;
-            CheckStatus {
-                healthy,
-                message: Some(format!(
-                    "{} ({})",
-                    proxy.get_registry_url(),
-                    if healthy { "reachable" } else { "unreachable" }
-                )),
-            }
-        }
-        None => CheckStatus {
-            healthy: false,
-            message: Some("Docker registry proxy disabled".to_string()),
-        },
+    let healthy = state.docker_proxy.check_registry_health().await;
+    let registry_status = CheckStatus {
+        healthy,
+        message: Some(format!(
+            "{} ({})",
+            state.docker_proxy.get_registry_url(),
+            if healthy { "reachable" } else { "unreachable" }
+        )),
     };
 
     let accepting_requests = state.shutdown_manager.should_accept_request();

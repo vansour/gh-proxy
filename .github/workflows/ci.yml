@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  RUST_TOOLCHAIN: 1.93.0
 
 jobs:
   backend-test:
@@ -19,6 +20,8 @@ jobs:
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
         
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -36,7 +39,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/Cargo.toml') }}
           
       - name: Run backend tests
         run: cargo test --locked --verbose -p gh-proxy
@@ -49,6 +52,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -66,7 +71,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/Cargo.toml') }}
 
       - name: Run frontend tests
         run: cargo test --locked --verbose -p gh-proxy-frontend
@@ -80,6 +85,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
           
       - name: Check workspace formatting
@@ -94,6 +100,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
           
       - name: Cache cargo registry
@@ -112,7 +119,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/Cargo.toml') }}
           
       - name: Run backend clippy
         run: cargo clippy --locked -p gh-proxy --all-targets --all-features -- -D warnings
@@ -128,9 +135,11 @@ jobs:
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install wasm target
-        run: rustup target add wasm32-unknown-unknown
+        run: rustup target add wasm32-unknown-unknown --toolchain "${{ env.RUST_TOOLCHAIN }}"
 
       - name: Install Dioxus CLI
         run: |
@@ -165,10 +174,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/dioxus-app/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/Cargo.toml') }}
 
       - name: Build frontend bundle
-        working-directory: frontend/dioxus-app
+        working-directory: frontend
         run: dx build --release --debug-symbols false
           
       - name: Build backend
@@ -192,6 +201,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -219,6 +230,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry
         uses: actions/cache@v4

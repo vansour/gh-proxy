@@ -15,7 +15,7 @@
 ## 2. 版本号规则
 
 - Git tag 使用 `vX.Y.Z` 或 `vX.Y.Z-rc.N` 形式。
-- `Cargo.toml`、`backend/Cargo.toml`、`frontend/dioxus-app/Cargo.toml` 中的版本号必须与 tag 去掉前缀 `v` 后完全一致。
+- `Cargo.toml`、`backend/Cargo.toml`、`frontend/Cargo.toml` 中的版本号必须与 tag 去掉前缀 `v` 后完全一致。
 - 已发布 tag 不重写、不复用。发现问题时发布新的 patch / RC tag。
 
 ## 3. 自动发布流程
@@ -29,11 +29,23 @@
 
 1. 校验 release tag 格式。
 2. 校验 tag 对应版本与 workspace / backend / frontend 清单文件一致。
-3. 重新执行后端测试、前端测试和 Docker smoke test。
+3. 重新执行 `cargo fmt --check`、workspace `cargo check`、后端测试、前端测试和 Docker smoke test。
 4. 构建并推送多架构 OCI 镜像到 `ghcr.io/<owner>/gh-proxy`。
 5. 为镜像生成 OCI labels、SBOM 与 provenance。
 6. 校验发布后的 manifest list 同时包含 `linux/amd64` 和 `linux/arm64`。
 7. 在镜像发布成功后自动创建或更新对应的 GitHub Release。
+
+如需在本地先做一次与 workflow 对齐的预演，可执行：
+
+```bash
+bash scripts/release-preflight.sh 1.2.1
+```
+
+如果当前环境没有 Docker，只想先校验版本、格式和 Rust 构建/测试链路，可临时跳过 smoke test：
+
+```bash
+RELEASE_PREFLIGHT_SKIP_DOCKER_SMOKE=1 bash scripts/release-preflight.sh 1.2.1
+```
 
 发布 workflow 默认使用 `GITHUB_TOKEN` 推送 GHCR；如果 package 没有继承当前仓库权限，可额外配置以下 secrets 作为兜底：
 

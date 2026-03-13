@@ -4,7 +4,6 @@ mod common;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -14,12 +13,10 @@ use gh_proxy::router;
 use gh_proxy::services::client::build_client;
 use http_body_util::BodyExt;
 use serde_json::Value;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
-use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_proxy_caches_fallback_response() {
@@ -483,25 +480,14 @@ async fn test_metrics_endpoint_rejects_remote_access_by_default() {
 
     let state = common::build_state(common::test_settings());
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
-
-    let mut request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/metrics")
-        .header("host", "proxy.example.com")
-        .body(Body::empty())
-        .expect("request");
-    request.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response = app.oneshot(request).await.expect("response");
-    let status = response.status();
-    let headers = response.headers().clone();
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
+    let (status, headers, body) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/metrics",
+        &[("host", "proxy.example.com")],
+        Some(common::remote_addr()),
+    )
+    .await;
     let body = String::from_utf8_lossy(&body);
 
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -522,24 +508,14 @@ async fn test_metrics_endpoint_can_be_enabled_for_remote_access() {
     settings.debug.metrics_enabled = true;
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
-
-    let mut request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/metrics")
-        .header("host", "proxy.example.com")
-        .body(Body::empty())
-        .expect("request");
-    request.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response = app.oneshot(request).await.expect("response");
-    let status = response.status();
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
+    let (status, _, body) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/metrics",
+        &[("host", "proxy.example.com")],
+        Some(common::remote_addr()),
+    )
+    .await;
     let body = String::from_utf8_lossy(&body);
 
     assert_eq!(status, StatusCode::OK);
@@ -588,31 +564,31 @@ async fn test_rate_limit_remote_requests_ignore_spoofed_cf_ip_without_origin_aut
     settings.rate_limit.max_requests = 1;
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
+    let (status1, _, _) = common::router_request(
+        app.clone(),
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "proxy.example.com"),
+            ("cf-connecting-ip", "203.0.113.1"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
+    let (status2, _, _) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "proxy.example.com"),
+            ("cf-connecting-ip", "203.0.113.2"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
 
-    let mut request1 = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .header("cf-connecting-ip", "203.0.113.1")
-        .body(Body::empty())
-        .expect("request");
-    request1.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let mut request2 = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .header("cf-connecting-ip", "203.0.113.2")
-        .body(Body::empty())
-        .expect("request");
-    request2.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response1 = app.clone().oneshot(request1).await.expect("response");
-    let response2 = app.oneshot(request2).await.expect("response");
-
-    assert_eq!(response1.status(), StatusCode::OK);
-    assert_eq!(response2.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(status1, StatusCode::OK);
+    assert_eq!(status2, StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
@@ -625,33 +601,33 @@ async fn test_rate_limit_remote_requests_trust_cf_ip_with_origin_auth() {
     settings.rate_limit.max_requests = 1;
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
+    let (status1, _, _) = common::router_request(
+        app.clone(),
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "proxy.example.com"),
+            ("x-gh-proxy-origin-auth", "secret"),
+            ("cf-connecting-ip", "203.0.113.1"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
+    let (status2, _, _) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "proxy.example.com"),
+            ("x-gh-proxy-origin-auth", "secret"),
+            ("cf-connecting-ip", "203.0.113.2"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
 
-    let mut request1 = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .header("x-gh-proxy-origin-auth", "secret")
-        .header("cf-connecting-ip", "203.0.113.1")
-        .body(Body::empty())
-        .expect("request");
-    request1.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let mut request2 = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .header("x-gh-proxy-origin-auth", "secret")
-        .header("cf-connecting-ip", "203.0.113.2")
-        .body(Body::empty())
-        .expect("request");
-    request2.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response1 = app.clone().oneshot(request1).await.expect("response");
-    let response2 = app.oneshot(request2).await.expect("response");
-
-    assert_eq!(response1.status(), StatusCode::OK);
-    assert_eq!(response2.status(), StatusCode::OK);
+    assert_eq!(status1, StatusCode::OK);
+    assert_eq!(status2, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -731,24 +707,14 @@ async fn test_ingress_host_guard_rejects_unexpected_remote_host() {
     settings.shell.public_base_url = "https://proxy.example.com".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
-
-    let mut request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "evil.example")
-        .body(Body::empty())
-        .expect("request");
-    request.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response = app.oneshot(request).await.expect("response");
-    let status = response.status();
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
+    let (status, _, body) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[("host", "evil.example")],
+        Some(common::remote_addr()),
+    )
+    .await;
     let body = String::from_utf8_lossy(&body);
 
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -764,18 +730,14 @@ async fn test_ingress_host_guard_accepts_configured_public_host() {
     settings.shell.public_base_url = "https://proxy.example.com".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
-
-    let mut request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .body(Body::empty())
-        .expect("request");
-    request.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response = app.oneshot(request).await.expect("response");
-    let status = response.status();
+    let (status, _, _) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[("host", "proxy.example.com")],
+        Some(common::remote_addr()),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK);
 }
@@ -789,24 +751,14 @@ async fn test_ingress_origin_auth_rejects_remote_requests_without_secret() {
     settings.ingress.auth_header_value = "secret".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
-
-    let mut request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .body(Body::empty())
-        .expect("request");
-    request.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response = app.oneshot(request).await.expect("response");
-    let status = response.status();
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
+    let (status, _, body) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[("host", "proxy.example.com")],
+        Some(common::remote_addr()),
+    )
+    .await;
     let body = String::from_utf8_lossy(&body);
 
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -823,19 +775,17 @@ async fn test_ingress_origin_auth_accepts_remote_requests_with_secret() {
     settings.ingress.auth_header_value = "secret".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
-
-    let mut request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .header("x-gh-proxy-origin-auth", "secret")
-        .body(Body::empty())
-        .expect("request");
-    request.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response = app.oneshot(request).await.expect("response");
-    let status = response.status();
+    let (status, _, _) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "proxy.example.com"),
+            ("x-gh-proxy-origin-auth", "secret"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK);
 }
@@ -2129,25 +2079,17 @@ async fn test_ingress_host_guard_ignores_spoofed_x_forwarded_host() {
     settings.shell.public_base_url = "https://proxy.example.com".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
-
-    let mut request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "evil.example")
-        .header("x-forwarded-host", "proxy.example.com")
-        .body(Body::empty())
-        .expect("request");
-    request.extensions_mut().insert(ConnectInfo(remote_addr));
-
-    let response = app.oneshot(request).await.expect("response");
-    let status = response.status();
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
+    let (status, _, body) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "evil.example"),
+            ("x-forwarded-host", "proxy.example.com"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
     let body = String::from_utf8_lossy(&body);
 
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -2164,42 +2106,31 @@ async fn test_ingress_origin_auth_requires_configured_header_name() {
     settings.ingress.auth_header_value = "secret".to_string();
     let state = common::build_state(settings);
     let app = router::create_router(state);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 443);
+    let (wrong_status, _, _) = common::router_request(
+        app.clone(),
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "proxy.example.com"),
+            ("x-gh-proxy-origin-auth", "secret"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
+    let (correct_status, _, _) = common::router_request(
+        app,
+        hyper::Method::GET,
+        "/api/config",
+        &[
+            ("host", "proxy.example.com"),
+            ("x-custom-origin-auth", "secret"),
+        ],
+        Some(common::remote_addr()),
+    )
+    .await;
 
-    let mut wrong_header_request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .header("x-gh-proxy-origin-auth", "secret")
-        .body(Body::empty())
-        .expect("request");
-    wrong_header_request
-        .extensions_mut()
-        .insert(ConnectInfo(remote_addr));
-
-    let mut correct_header_request = axum::http::Request::builder()
-        .method(hyper::Method::GET)
-        .uri("/api/config")
-        .header("host", "proxy.example.com")
-        .header("x-custom-origin-auth", "secret")
-        .body(Body::empty())
-        .expect("request");
-    correct_header_request
-        .extensions_mut()
-        .insert(ConnectInfo(remote_addr));
-
-    let wrong_response = app
-        .clone()
-        .oneshot(wrong_header_request)
-        .await
-        .expect("wrong header response");
-    let correct_response = app
-        .oneshot(correct_header_request)
-        .await
-        .expect("correct header response");
-
-    assert_eq!(wrong_response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(correct_response.status(), StatusCode::OK);
+    assert_eq!(wrong_status, StatusCode::FORBIDDEN);
+    assert_eq!(correct_status, StatusCode::OK);
 }
 
 #[tokio::test]

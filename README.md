@@ -22,8 +22,7 @@
 ```
 gh-proxy/
 ├── backend/              # 后端 Rust 代码
-├── frontend/
-│   └── dioxus-app/      # 唯一前端来源（Dioxus）
+├── frontend/            # 唯一前端来源（Dioxus）
 └── README.md          # 本文件
 ```
 
@@ -61,11 +60,11 @@ rustup target add wasm32-unknown-unknown
 cargo install dioxus-cli --version 0.7.3
 
 # 产出浏览器静态资源
-cd frontend/dioxus-app
+cd frontend
 dx build --release --debug-symbols false
 
 # 运行工作区测试
-cd ../..
+cd ..
 cargo test -p gh-proxy
 cargo test -p gh-proxy-frontend
 
@@ -74,7 +73,7 @@ cargo run -p gh-proxy
 ```
 
 本地运行后，后端会优先读取 `/app/web`，如果不存在则回退到
-`frontend/dioxus-app/target/dx/gh-proxy-frontend/release/web/public` 下的 Dioxus 构建产物。
+`frontend/target/dx/gh-proxy-frontend/release/web/public` 下的 Dioxus 构建产物。
 
 ## ⚙️ 配置指南
 

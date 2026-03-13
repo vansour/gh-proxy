@@ -17,6 +17,11 @@ permissions:
   attestations: write
   id-token: write
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  RUST_TOOLCHAIN: 1.93.0
+
 jobs:
   prepare:
     name: Prepare Release
@@ -90,20 +95,32 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - name: Verify release tag matches workspace version
-        run: bash scripts/verify-release-version.sh "${{ needs.prepare.outputs.version }}"
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
 
-      - name: Run backend tests
-        run: cargo test --locked -q -p gh-proxy
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run frontend tests
-        run: cargo test --locked -q -p gh-proxy-frontend
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run Docker smoke test
-        run: bash docker/smoke-test.sh
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'backend/Cargo.toml', 'frontend/Cargo.toml') }}
+
+      - name: Run release preflight
+        run: bash scripts/release-preflight.sh "${{ needs.prepare.outputs.version }}"
 
   publish-image:
     name: Publish Image
@@ -212,36 +229,29 @@ jobs:
           tag="${{ needs.prepare.outputs.tag }}"
           version="${{ needs.prepare.outputs.version }}"
           prerelease="${{ needs.prepare.outputs.is_prerelease }}"
-          make_latest="false"
+          release_args=(
+            --repo "${GITHUB_REPOSITORY}"
+            --title "gh-proxy ${version}"
+            --notes-file release-notes.md
+          )
+
+          if [[ "${prerelease}" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
 
           if [[ "${{ needs.prepare.outputs.publish_latest }}" == "true" ]]; then
-            make_latest="true"
+            release_args+=(--latest)
           fi
 
-          jq -n \
-            --arg tag_name "${tag}" \
-            --arg target_commitish "${tag}" \
-            --arg name "gh-proxy ${version}" \
-            --rawfile body release-notes.md \
-            --arg make_latest "${make_latest}" \
-            --argjson prerelease "${prerelease}" \
-            '{
-              tag_name: $tag_name,
-              target_commitish: $target_commitish,
-              name: $name,
-              body: $body,
-              draft: false,
-              prerelease: $prerelease,
-              make_latest: $make_latest
-            }' > release.json
-
-          if release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.id' 2>/dev/null)"; then
-            url="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --input release.json --jq '.html_url')"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${tag}" "${release_args[@]}"
             state="updated"
           else
-            url="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --input release.json --jq '.html_url')"
+            gh release create "${tag}" --verify-tag "${release_args[@]}"
             state="created"
           fi
+
+          url="$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json url --jq '.url')"
 
           {
             echo "url=${url}"
